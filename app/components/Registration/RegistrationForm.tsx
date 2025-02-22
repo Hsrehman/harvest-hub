@@ -2,8 +2,8 @@
 
 import React, { useState, useCallback, useRef } from 'react';
 import { ArrowRight, ArrowLeft, Check, Eye, EyeOff, Building2, User } from 'lucide-react';
-import UserTypeCard from './UserTypeCard';
-import useDebounce from '../../hooks/useDebounce';
+import UserTypeCard from '@/app/components/Registration/UserTypeCard';
+import useDebounce from '@/app/hooks/useDebounce';
 import { validateEmail, validatePassword, validatePhoneNumber, calculatePasswordStrength } from '@/app/utils/User-Registration/Validation';
 
 interface FormData {
@@ -158,14 +158,50 @@ const RegistrationForm: React.FC<RegistrationFormProps> = ({ onSubmit }) => {
     }
   };
 
+  const [useEmail, setUseEmail] = useState<boolean | null>(null);
+
   const handleBack = () => {
     if (step > 1) {
+      if (step === 2) {
+        setUseEmail(null); // Reset useEmail when going back to step 2
+      }
       setStep(step - 1);
+    }
+  };
+
+  const registerUser = async (data: FormData) => {
+    try {
+      const response = await fetch('/api/user-registration', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          ...data,
+          id: crypto.randomUUID(), // Generate a UUID on the client-side
+        }),
+      });
+
+      if (response.ok) {
+        // Registration successful
+        console.log('Registration successful!');
+        // Optionally, redirect the user or display a success message
+      } else {
+        // Registration failed
+        console.error('Registration failed:', response.statusText);
+        // Optionally, display an error message to the user
+        const errorData = await response.json();
+        setErrors(errorData.errors);
+      }
+    } catch (error) {
+      console.error('Error during registration:', error);
+      // Optionally, display a generic error message to the user
     }
   };
 
   const handleSubmit = () => {
     if (validateStep(4)) {
+      registerUser(formData);
       onSubmit(formData);
     }
   };
@@ -199,29 +235,49 @@ const RegistrationForm: React.FC<RegistrationFormProps> = ({ onSubmit }) => {
       case 2:
         return (
           <div className="w-full">
-            <label htmlFor="email" className="block text-sm font-medium text-gray-700 mb-1">
-              What's your email?
-            </label>
-            <input
-              type="email"
-              id="email"
-              value={formData.email}
-              onChange={(e) => setFormData({ ...formData, email: e.target.value })}
-              placeholder="Enter your email address"
-              className={`w-full px-4 py-3 rounded-lg border ${errors.email ? 'border-red-500' : 'border-gray-300'
-                } focus:ring-2 focus:ring-green-500 focus:border-green-500 outline-none transition-all`}
-            />
-            {errors.email && (
-              <p className="mt-1 text-sm text-red-500">{errors.email}</p>
-            )}
-            <div className="mt-4 space-y-2">
-              <button className="w-full py-3 bg-white border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors duration-200 flex items-center justify-center gap-2">
-                <span>G</span> Sign in with Google
-              </button>
-              <button className="w-full py-3 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors duration-200 flex items-center justify-center gap-2">
-                <span>f</span> Sign in with Facebook
-              </button>
-            </div>
+            {useEmail === null ? (
+              <div className="space-y-4">
+                <p className="block text-sm font-medium text-gray-700 mb-1">
+                  How would you like to register?
+                </p>
+                <button
+                  className="w-full py-3 bg-white border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors duration-200 flex items-center justify-center gap-2"
+                  onClick={() => setUseEmail(false)}
+                >
+                  <span>G</span> Continue with Google
+                </button>
+                <button
+                  className="w-full py-3 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors duration-200 flex items-center justify-center gap-2"
+                  onClick={() => setUseEmail(false)}
+                >
+                  <span>f</span> Continue with Facebook
+                </button>
+                <button
+                  className="w-full py-3 bg-green-500 text-white rounded-lg hover:bg-green-600 transition-colors duration-200 flex items-center justify-center gap-2"
+                  onClick={() => setUseEmail(true)}
+                >
+                  Continue with Email
+                </button>
+              </div>
+            ) : useEmail ? (
+              <>
+                <label htmlFor="email" className="block text-sm font-medium text-gray-700 mb-1">
+                  What's your email?
+                </label>
+                <input
+                  type="email"
+                  id="email"
+                  value={formData.email}
+                  onChange={(e) => setFormData({ ...formData, email: e.target.value })}
+                  placeholder="Enter your email address"
+                  className={`w-full px-4 py-3 rounded-lg border ${errors.email ? 'border-red-500' : 'border-gray-300'
+                    } focus:ring-2 focus:ring-green-500 focus:border-green-500 outline-none transition-all`}
+                />
+                {errors.email && (
+                  <p className="mt-1 text-sm text-red-500">{errors.email}</p>
+                )}
+              </>
+            ) : null}
           </div>
         );
 
@@ -490,6 +546,21 @@ const RegistrationForm: React.FC<RegistrationFormProps> = ({ onSubmit }) => {
     );
   };
 
+  const nextButtonText = () => {
+    if (step === 2 && useEmail === null) {
+      return 'Next';
+    }
+    return step === 4 ? 'Create Account' : 'Next';
+  };
+
+  const handleNextStep = () => {
+    if (step === 2 && useEmail === null) {
+      // If the user hasn't chosen an option yet, don't proceed
+      return;
+    }
+    handleNext();
+  };
+
   return (
     <>
       {renderMobileProgress()}
@@ -507,10 +578,10 @@ const RegistrationForm: React.FC<RegistrationFormProps> = ({ onSubmit }) => {
             </button>
           )}
           <button
-            onClick={step === 4 ? handleSubmit : handleNext}
+            onClick={nextButtonText() === 'Create Account' ? handleSubmit : handleNextStep}
             className="flex-1 bg-green-600 hover:bg-green-700 text-white font-semibold py-3 rounded-lg transition-all duration-200 flex items-center justify-center gap-2"
           >
-            {step === 4 ? 'Create Account' : 'Next'}
+            {nextButtonText()}
             {step !== 4 && <ArrowRight className="w-5 h-5" />}
           </button>
         </div>
