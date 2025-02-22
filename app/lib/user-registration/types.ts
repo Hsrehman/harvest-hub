@@ -14,3 +14,17 @@ export interface User {
     createdAt: Date;
     updatedAt: Date;
   }
+  
+  export interface FormData {
+    email: string;
+    firstName: string;
+    lastName: string;
+    password: string;
+    confirmPassword: string;
+    accountType: 'individual' | 'business' | null;
+    businessName?: string;
+    registrationNumber?: string;
+    businessDocument?: File | null;
+    phoneNumber?: string;
+    dateOfBirth?: string;
+  }

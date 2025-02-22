@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useCallback, useRef } from 'react';
+import React, { useState } from 'react';
 import { ArrowRight, ArrowLeft, Check, Eye, EyeOff, Building2, User } from 'lucide-react';
 import UserTypeCard from '@/app/components/Registration/UserTypeCard';
 import useDebounce from '@/app/hooks/useDebounce';
@@ -31,6 +31,7 @@ interface FormErrors {
   registrationNumber?: string;
   phoneNumber?: string;
   dateOfBirth?: string;
+  general?: string;
 }
 
 interface PasswordStrength {
@@ -48,6 +49,11 @@ const RegistrationForm: React.FC<RegistrationFormProps> = ({ onSubmit }) => {
   const [step, setStep] = useState(1);
   const [showPassword, setShowPassword] = useState(false);
   const [errors, setErrors] = useState<FormErrors>({});
+  const [submissionStatus, setSubmissionStatus] = useState<'idle' | 'success' | 'error' | 'loading'>('idle');
+  const [emailStatus, setEmailStatus] = useState<{ available: boolean | null; message: string }>({
+    available: null,
+    message: '',
+  });
   const [formData, setFormData] = useState<FormData>({
     email: '',
     firstName: '',
@@ -77,6 +83,27 @@ const RegistrationForm: React.FC<RegistrationFormProps> = ({ onSubmit }) => {
     setErrors(prevErrors => ({ ...prevErrors, phoneNumber: error }));
   }, 300);
 
+  const debouncedCheckEmail = useDebounce(async (email: string) => {
+    if (!email || !validateEmail(email)) {
+      setEmailStatus({ available: null, message: '' });
+      return;
+    }
+
+    try {
+      const response = await fetch(`/api/users/check-email?email=${encodeURIComponent(email)}`);
+      if (!response.ok) {
+        const text = await response.text();
+        setEmailStatus({ available: null, message: `Error checking email (status: ${response.status})` });
+        return;
+      }
+
+      const data = await response.json();
+      setEmailStatus({ available: data.available, message: data.message });
+    } catch (error: any) {
+      setEmailStatus({ available: null, message: 'Error checking email availability: ' + error.message });
+    }
+  }, 500);
+
   const handlePasswordChange = (password: string) => {
     const strengthChecks = calculatePasswordStrength(password);
     debouncedSetPasswordStrength(strengthChecks);
@@ -89,6 +116,12 @@ const RegistrationForm: React.FC<RegistrationFormProps> = ({ onSubmit }) => {
     } else {
       debouncedSetPhoneNumberError(validation.error);
     }
+    setFormData({ ...formData, phoneNumber: phone });
+  };
+
+  const handleEmailChange = (email: string) => {
+    setFormData({ ...formData, email });
+    debouncedCheckEmail(email);
   };
 
   const validateStep = (currentStep: number) => {
@@ -104,6 +137,10 @@ const RegistrationForm: React.FC<RegistrationFormProps> = ({ onSubmit }) => {
         newErrors.email = 'Email is required';
       } else if (!validateEmail(formData.email)) {
         newErrors.email = 'Please enter a valid email';
+      } else if (emailStatus.available === false) {
+        newErrors.email = 'Email already exists. Please use a different email or log in.';
+      } else if (emailStatus.available === null) {
+        newErrors.email = 'Please wait for email availability check.';
       }
     }
 
@@ -163,40 +200,43 @@ const RegistrationForm: React.FC<RegistrationFormProps> = ({ onSubmit }) => {
   const handleBack = () => {
     if (step > 1) {
       if (step === 2) {
-        setUseEmail(null); // Reset useEmail when going back to step 2
+        setUseEmail(null);
       }
       setStep(step - 1);
     }
   };
 
   const registerUser = async (data: FormData) => {
+    setSubmissionStatus('loading');
     try {
-      const response = await fetch('/api/user-registration', {
+      const payload = {
+        ...data,
+        businessDocument: data.businessDocument ? data.businessDocument.name : '',
+      };
+
+      const response = await fetch('/api/users', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({
-          ...data,
-          // Remove this line:
-          // id: crypto.randomUUID(), // Generate a UUID on the client-side
-        }),
+        body: JSON.stringify(payload),
       });
 
       if (response.ok) {
-        // Registration successful
-        console.log('Registration successful!');
-        // Optionally, redirect the user or display a success message
+        setSubmissionStatus('success');
+        setErrors({});
+        setTimeout(() => setSubmissionStatus('idle'), 3000);
       } else {
-        // Registration failed
-        console.error('Registration failed:', response.statusText);
-        // Optionally, display an error message to the user
         const errorData = await response.json();
-        setErrors(errorData.errors);
+        setErrors({
+          ...errorData.errors,
+          general: errorData.message || 'Registration failed. Please try again.',
+        });
+        setSubmissionStatus('error');
       }
-    } catch (error) {
-      console.error('Error during registration:', error);
-      // Optionally, display a generic error message to the user
+    } catch (error: any) {
+      setErrors({ general: 'An error occurred during registration: ' + error.message });
+      setSubmissionStatus('error');
     }
   };
 
@@ -227,7 +267,7 @@ const RegistrationForm: React.FC<RegistrationFormProps> = ({ onSubmit }) => {
               isSelected={formData.accountType === 'business'}
               onClick={() => setFormData({ ...formData, accountType: 'business' })}
             />
-            {errors.accountType && (
+            {errors?.accountType && (
               <p className="mt-1 text-sm text-red-500">{errors.accountType}</p>
             )}
           </div>
@@ -269,13 +309,21 @@ const RegistrationForm: React.FC<RegistrationFormProps> = ({ onSubmit }) => {
                   type="email"
                   id="email"
                   value={formData.email}
-                  onChange={(e) => setFormData({ ...formData, email: e.target.value })}
+                  onChange={(e) => handleEmailChange(e.target.value)}
                   placeholder="Enter your email address"
-                  className={`w-full px-4 py-3 rounded-lg border ${errors.email ? 'border-red-500' : 'border-gray-300'
+                  className={`w-full px-4 py-3 rounded-lg border ${errors?.email ? 'border-red-500' : 'border-gray-300'
                     } focus:ring-2 focus:ring-green-500 focus:border-green-500 outline-none transition-all`}
                 />
-                {errors.email && (
+                {errors?.email ? (
                   <p className="mt-1 text-sm text-red-500">{errors.email}</p>
+                ) : emailStatus.available === false ? (
+                  <p className="mt-1 text-sm text-red-500">
+                    {emailStatus.message}. <a href="/login" className="underline hover:text-red-700">Log in instead?</a>
+                  </p>
+                ) : emailStatus.available === true ? (
+                  <p className="mt-1 text-sm text-green-600">{emailStatus.message}</p>
+                ) : (
+                  <p className="mt-1 text-sm text-gray-600">Checking email availability...</p>
                 )}
               </>
             ) : null}
@@ -295,10 +343,10 @@ const RegistrationForm: React.FC<RegistrationFormProps> = ({ onSubmit }) => {
                 value={formData.firstName}
                 onChange={(e) => setFormData({ ...formData, firstName: e.target.value })}
                 placeholder="Enter your first name"
-                className={`w-full px-4 py-3 rounded-lg border ${errors.firstName ? 'border-red-500' : 'border-gray-300'
+                className={`w-full px-4 py-3 rounded-lg border ${errors?.firstName ? 'border-red-500' : 'border-gray-300'
                   } focus:ring-2 focus:ring-green-500 focus:border-green-500 outline-none transition-all`}
               />
-              {errors.firstName && (
+              {errors?.firstName && (
                 <p className="mt-1 text-sm text-red-500">{errors.firstName}</p>
               )}
             </div>
@@ -312,10 +360,10 @@ const RegistrationForm: React.FC<RegistrationFormProps> = ({ onSubmit }) => {
                 value={formData.lastName}
                 onChange={(e) => setFormData({ ...formData, lastName: e.target.value })}
                 placeholder="Enter your last name"
-                className={`w-full px-4 py-3 rounded-lg border ${errors.lastName ? 'border-red-500' : 'border-gray-300'
+                className={`w-full px-4 py-3 rounded-lg border ${errors?.lastName ? 'border-red-500' : 'border-gray-300'
                   } focus:ring-2 focus:ring-green-500 focus:border-green-500 outline-none transition-all`}
               />
-              {errors.lastName && (
+              {errors?.lastName && (
                 <p className="mt-1 text-sm text-red-500">{errors.lastName}</p>
               )}
             </div>
@@ -331,10 +379,10 @@ const RegistrationForm: React.FC<RegistrationFormProps> = ({ onSubmit }) => {
                     value={formData.businessName}
                     onChange={(e) => setFormData({ ...formData, businessName: e.target.value })}
                     placeholder="Enter business name"
-                    className={`w-full px-4 py-3 rounded-lg border ${errors.businessName ? 'border-red-500' : 'border-gray-300'
+                    className={`w-full px-4 py-3 rounded-lg border ${errors?.businessName ? 'border-red-500' : 'border-gray-300'
                       } focus:ring-2 focus:ring-green-500 focus:border-green-500 outline-none transition-all`}
                   />
-                  {errors.businessName && (
+                  {errors?.businessName && (
                     <p className="mt-1 text-sm text-red-500">{errors.businessName}</p>
                   )}
                 </div>
@@ -347,10 +395,10 @@ const RegistrationForm: React.FC<RegistrationFormProps> = ({ onSubmit }) => {
                     value={formData.registrationNumber}
                     onChange={(e) => setFormData({ ...formData, registrationNumber: e.target.value })}
                     placeholder="Enter registration number"
-                    className={`w-full px-4 py-3 rounded-lg border ${errors.registrationNumber ? 'border-red-500' : 'border-gray-300'
+                    className={`w-full px-4 py-3 rounded-lg border ${errors?.registrationNumber ? 'border-red-500' : 'border-gray-300'
                       } focus:ring-2 focus:ring-green-500 focus:border-green-500 outline-none transition-all`}
                   />
-                  {errors.registrationNumber && (
+                  {errors?.registrationNumber && (
                     <p className="mt-1 text-sm text-red-500">{errors.registrationNumber}</p>
                   )}
                 </div>
@@ -378,19 +426,14 @@ const RegistrationForm: React.FC<RegistrationFormProps> = ({ onSubmit }) => {
                   <input
                     type="tel"
                     value={formData.phoneNumber}
-                    onChange={(e) => {
-                      const phone = e.target.value;
-                      setFormData({ ...formData, phoneNumber: phone });
-                      handlePhoneNumberChange(phone);
-                    }}
+                    onChange={(e) => handlePhoneNumberChange(e.target.value)}
                     placeholder="Enter phone number"
-                    className={`w-full px-4 py-3 rounded-lg border ${errors.phoneNumber ? 'border-red-500' : 'border-gray-300'
+                    className={`w-full px-4 py-3 rounded-lg border ${errors?.phoneNumber ? 'border-red-500' : 'border-gray-300'
                       } focus:ring-2 focus:ring-green-500 focus:border-green-500 outline-none transition-all`}
                   />
-                  {errors.phoneNumber && (
+                  {errors?.phoneNumber && (
                     <p className="mt-1 text-sm text-red-500">{errors.phoneNumber}</p>
                   )}
-
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">
@@ -400,10 +443,10 @@ const RegistrationForm: React.FC<RegistrationFormProps> = ({ onSubmit }) => {
                     type="date"
                     value={formData.dateOfBirth}
                     onChange={(e) => setFormData({ ...formData, dateOfBirth: e.target.value })}
-                    className={`w-full px-4 py-3 rounded-lg border ${errors.dateOfBirth ? 'border-red-500' : 'border-gray-300'
+                    className={`w-full px-4 py-3 rounded-lg border ${errors?.dateOfBirth ? 'border-red-500' : 'border-gray-300'
                       } focus:ring-2 focus:ring-green-500 focus:border-green-500 outline-none transition-all`}
                   />
-                  {errors.dateOfBirth && (
+                  {errors?.dateOfBirth && (
                     <p className="mt-1 text-sm text-red-500">{errors.dateOfBirth}</p>
                   )}
                 </div>
@@ -429,7 +472,7 @@ const RegistrationForm: React.FC<RegistrationFormProps> = ({ onSubmit }) => {
                     handlePasswordChange(e.target.value);
                   }}
                   placeholder="Enter your password"
-                  className={`w-full px-4 py-3 rounded-lg border ${errors.password ? 'border-red-500' : 'border-gray-300'
+                  className={`w-full px-4 py-3 rounded-lg border ${errors?.password ? 'border-red-500' : 'border-gray-300'
                     } focus:ring-2 focus:ring-green-500 focus:border-green-500 outline-none transition-all pr-10`}
                 />
                 <button
@@ -464,7 +507,7 @@ const RegistrationForm: React.FC<RegistrationFormProps> = ({ onSubmit }) => {
                 </div>
               </div>
 
-              {errors.password && (
+              {errors?.password && (
                 <p className="mt-1 text-sm text-red-500">{errors.password}</p>
               )}
             </div>
@@ -478,10 +521,10 @@ const RegistrationForm: React.FC<RegistrationFormProps> = ({ onSubmit }) => {
                 value={formData.confirmPassword}
                 onChange={(e) => setFormData({ ...formData, confirmPassword: e.target.value })}
                 placeholder="Confirm your password"
-                className={`w-full px-4 py-3 rounded-lg border ${errors.confirmPassword ? 'border-red-500' : 'border-gray-300'
+                className={`w-full px-4 py-3 rounded-lg border ${errors?.confirmPassword ? 'border-red-500' : 'border-gray-300'
                   } focus:ring-2 focus:ring-green-500 focus:border-green-500 outline-none transition-all`}
               />
-              {errors.confirmPassword && (
+              {errors?.confirmPassword && (
                 <p className="mt-1 text-sm text-red-500">{errors.confirmPassword}</p>
               )}
             </div>
@@ -556,7 +599,6 @@ const RegistrationForm: React.FC<RegistrationFormProps> = ({ onSubmit }) => {
 
   const handleNextStep = () => {
     if (step === 2 && useEmail === null) {
-      // If the user hasn't chosen an option yet, don't proceed
       return;
     }
     handleNext();
@@ -568,6 +610,15 @@ const RegistrationForm: React.FC<RegistrationFormProps> = ({ onSubmit }) => {
       {renderDesktopProgress()}
       <div className="space-y-6">
         {getStepContent()}
+        {submissionStatus === 'loading' && (
+          <p className="mt-2 text-sm text-gray-600">Registering... Please wait.</p>
+        )}
+        {submissionStatus === 'success' && (
+          <p className="mt-2 text-sm text-green-600">Registration successful! Welcome aboard!</p>
+        )}
+        {(submissionStatus === 'error' || errors?.general) && (
+          <p className="mt-2 text-sm text-red-500">{errors?.general || 'Registration failed. Please try again.'}</p>
+        )}
         <div className="flex gap-4 pt-4">
           {step > 1 && (
             <button
@@ -581,8 +632,9 @@ const RegistrationForm: React.FC<RegistrationFormProps> = ({ onSubmit }) => {
           <button
             onClick={nextButtonText() === 'Create Account' ? handleSubmit : handleNextStep}
             className="flex-1 bg-green-600 hover:bg-green-700 text-white font-semibold py-3 rounded-lg transition-all duration-200 flex items-center justify-center gap-2"
+            disabled={submissionStatus === 'loading' || (step === 2 && emailStatus.available !== true)}
           >
-            {nextButtonText()}
+            {submissionStatus === 'loading' && step === 4 ? 'Processing...' : nextButtonText()}
             {step !== 4 && <ArrowRight className="w-5 h-5" />}
           </button>
         </div>
