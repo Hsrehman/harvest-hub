@@ -178,7 +178,8 @@ const RegistrationForm: React.FC<RegistrationFormProps> = ({ onSubmit }) => {
         },
         body: JSON.stringify({
           ...data,
-          id: crypto.randomUUID(), // Generate a UUID on the client-side
+          // Remove this line:
+          // id: crypto.randomUUID(), // Generate a UUID on the client-side
         }),
       });
 
