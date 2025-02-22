@@ -2,23 +2,10 @@
 
 import React, { useState } from 'react';
 import { ArrowRight, ArrowLeft, Check, Eye, EyeOff, Building2, User } from 'lucide-react';
-import UserTypeCard from '@/app/components/Registration/UserTypeCard';
+import UserTypeCard from './UserTypeCard';
 import useDebounce from '@/app/hooks/useDebounce';
-import { validateEmail, validatePassword, validatePhoneNumber, calculatePasswordStrength } from '@/app/utils/User-Registration/Validation';
-
-interface FormData {
-  email: string;
-  firstName: string;
-  lastName: string;
-  password: string;
-  confirmPassword: string;
-  accountType: 'individual' | 'business' | null;
-  businessName?: string;
-  registrationNumber?: string;
-  businessDocument?: File | null;
-  phoneNumber?: string;
-  dateOfBirth?: string;
-}
+import { validateEmail, validatePassword, validatePhoneNumber, calculatePasswordStrength, PasswordStrength } from '@/app/lib/user-registration/validation';
+import { FormData } from '@/app/lib/user-registration/types';
 
 interface FormErrors {
   email?: string;
@@ -34,88 +21,48 @@ interface FormErrors {
   general?: string;
 }
 
-interface PasswordStrength {
-  hasMinLength: boolean;
-  hasNumber: boolean;
-  hasSpecialChar: boolean;
-  hasUpperCase: boolean;
-}
-
 interface RegistrationFormProps {
   onSubmit: (data: FormData) => void;
 }
+
 
 const RegistrationForm: React.FC<RegistrationFormProps> = ({ onSubmit }) => {
   const [step, setStep] = useState(1);
   const [showPassword, setShowPassword] = useState(false);
   const [errors, setErrors] = useState<FormErrors>({});
   const [submissionStatus, setSubmissionStatus] = useState<'idle' | 'success' | 'error' | 'loading'>('idle');
-  const [emailStatus, setEmailStatus] = useState<{ available: boolean | null; message: string }>({
-    available: null,
-    message: '',
-  });
+  const [emailStatus, setEmailStatus] = useState<{ available: boolean | null; message: string }>({ available: null, message: '' });
   const [formData, setFormData] = useState<FormData>({
-    email: '',
-    firstName: '',
-    lastName: '',
-    password: '',
-    confirmPassword: '',
-    accountType: null,
-    businessName: '',
-    registrationNumber: '',
-    businessDocument: null,
-    phoneNumber: '',
-    dateOfBirth: ''
+    email: '', firstName: '', lastName: '', password: '', confirmPassword: '', accountType: null,
+    businessName: '', registrationNumber: '', businessDocument: null, phoneNumber: '', dateOfBirth: '',
   });
-
   const [passwordStrength, setPasswordStrength] = useState<PasswordStrength>({
-    hasMinLength: false,
-    hasNumber: false,
-    hasSpecialChar: false,
-    hasUpperCase: false
+    hasMinLength: false, hasNumber: false, hasSpecialChar: false, hasUpperCase: false,
   });
+  const [useEmail, setUseEmail] = useState<boolean | null>(null); // Added from your design
 
-  const debouncedSetPasswordStrength = useDebounce((strengthChecks: PasswordStrength) => {
-    setPasswordStrength(strengthChecks);
-  }, 300);
-
-  const debouncedSetPhoneNumberError = useDebounce((error: string | undefined) => {
-    setErrors(prevErrors => ({ ...prevErrors, phoneNumber: error }));
-  }, 300);
-
+  const debouncedSetPasswordStrength = useDebounce((strength: PasswordStrength) => setPasswordStrength(strength), 300);
+  const debouncedSetPhoneNumberError = useDebounce((error: string | undefined) => setErrors(prev => ({ ...prev, phoneNumber: error })), 300);
   const debouncedCheckEmail = useDebounce(async (email: string) => {
-    if (!email || !validateEmail(email)) {
-      setEmailStatus({ available: null, message: '' });
-      return;
-    }
-
+    if (!email || !validateEmail(email)) return setEmailStatus({ available: null, message: '' });
     try {
       const response = await fetch(`/api/users/check-email?email=${encodeURIComponent(email)}`);
-      if (!response.ok) {
-        const text = await response.text();
-        setEmailStatus({ available: null, message: `Error checking email (status: ${response.status})` });
-        return;
-      }
-
       const data = await response.json();
+      if (!response.ok) throw new Error(data.error);
       setEmailStatus({ available: data.available, message: data.message });
-    } catch (error: any) {
-      setEmailStatus({ available: null, message: 'Error checking email availability: ' + error.message });
+    } catch (error) {
+      setEmailStatus({ available: null, message: `Error checking email: ${error instanceof Error ? error.message : 'Unknown error'}` });
     }
   }, 500);
 
   const handlePasswordChange = (password: string) => {
-    const strengthChecks = calculatePasswordStrength(password);
-    debouncedSetPasswordStrength(strengthChecks);
+    const strength = calculatePasswordStrength(password);
+    debouncedSetPasswordStrength(strength);
   };
 
   const handlePhoneNumberChange = (phone: string) => {
     const validation = validatePhoneNumber(phone);
-    if (validation.isValid) {
-      debouncedSetPhoneNumberError(undefined);
-    } else {
-      debouncedSetPhoneNumberError(validation.error);
-    }
+    debouncedSetPhoneNumberError(validation.error);
     setFormData({ ...formData, phoneNumber: phone });
   };
 
@@ -126,82 +73,39 @@ const RegistrationForm: React.FC<RegistrationFormProps> = ({ onSubmit }) => {
 
   const validateStep = (currentStep: number) => {
     const newErrors: FormErrors = {};
-    if (currentStep === 1) {
-      if (!formData.accountType) {
-        newErrors.accountType = 'Please select an account type';
-      }
-    }
-
+    if (currentStep === 1 && !formData.accountType) newErrors.accountType = 'Please select an account type';
     if (currentStep === 2) {
-      if (!formData.email) {
-        newErrors.email = 'Email is required';
-      } else if (!validateEmail(formData.email)) {
-        newErrors.email = 'Please enter a valid email';
-      } else if (emailStatus.available === false) {
-        newErrors.email = 'Email already exists. Please use a different email or log in.';
-      } else if (emailStatus.available === null) {
-        newErrors.email = 'Please wait for email availability check.';
-      }
+      if (!formData.email) newErrors.email = 'Email is required';
+      else if (!validateEmail(formData.email)) newErrors.email = 'Please enter a valid email';
+      else if (emailStatus.available === false) newErrors.email = 'Email already exists';
+      else if (emailStatus.available === null) newErrors.email = 'Please wait for email check';
     }
-
     if (currentStep === 3) {
-      if (!formData.firstName.trim()) {
-        newErrors.firstName = 'First name is required';
-      }
-      if (!formData.lastName.trim()) {
-        newErrors.lastName = 'Last name is required';
-      }
-
+      if (!formData.firstName.trim()) newErrors.firstName = 'First name is required';
+      if (!formData.lastName.trim()) newErrors.lastName = 'Last name is required';
       if (formData.accountType === 'business') {
-        if (!formData.businessName?.trim()) {
-          newErrors.businessName = 'Business name is required';
-        }
-        if (!formData.registrationNumber?.trim()) {
-          newErrors.registrationNumber = 'Registration number is required';
-        }
-      }
-
-      if (formData.accountType === 'individual') {
-        const phoneValidation = validatePhoneNumber(formData.phoneNumber || '');
-        if (!phoneValidation.isValid) {
-          newErrors.phoneNumber = phoneValidation.error;
-        }
-        if (!formData.dateOfBirth) {
-          newErrors.dateOfBirth = 'Date of birth is required';
-        }
+        if (!formData.businessName?.trim()) newErrors.businessName = 'Business name is required';
+        if (!formData.registrationNumber?.trim()) newErrors.registrationNumber = 'Registration number is required';
+      } else if (formData.accountType === 'individual') {
+        const phone = validatePhoneNumber(formData.phoneNumber || '');
+        if (!phone.isValid) newErrors.phoneNumber = phone.error;
+        if (!formData.dateOfBirth) newErrors.dateOfBirth = 'Date of birth is required';
       }
     }
-
     if (currentStep === 4) {
-      if (!formData.password) {
-        newErrors.password = 'Password is required';
-      } else if (!validatePassword(formData.password)) {
-        newErrors.password = 'Password does not meet requirements';
-      }
-      if (!formData.confirmPassword) {
-        newErrors.confirmPassword = 'Please confirm your password';
-      } else if (formData.password !== formData.confirmPassword) {
-        newErrors.confirmPassword = 'Passwords do not match';
-      }
+      if (!formData.password) newErrors.password = 'Password is required';
+      else if (!validatePassword(formData.password)) newErrors.password = 'Password does not meet requirements';
+      if (!formData.confirmPassword) newErrors.confirmPassword = 'Please confirm your password';
+      else if (formData.password !== formData.confirmPassword) newErrors.confirmPassword = 'Passwords do not match';
     }
-
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
   };
 
-  const handleNext = () => {
-    if (validateStep(step)) {
-      setStep(step + 1);
-    }
-  };
-
-  const [useEmail, setUseEmail] = useState<boolean | null>(null);
-
+  const handleNext = () => validateStep(step) && setStep(step + 1);
   const handleBack = () => {
     if (step > 1) {
-      if (step === 2) {
-        setUseEmail(null);
-      }
+      if (step === 2) setUseEmail(null); // From your design
       setStep(step - 1);
     }
   };
@@ -209,41 +113,29 @@ const RegistrationForm: React.FC<RegistrationFormProps> = ({ onSubmit }) => {
   const registerUser = async (data: FormData) => {
     setSubmissionStatus('loading');
     try {
-      const payload = {
-        ...data,
-        businessDocument: data.businessDocument ? data.businessDocument.name : '',
-      };
-
+      const payload = { ...data, businessDocument: data.businessDocument ? data.businessDocument.name : '' };
       const response = await fetch('/api/users', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       });
-
-      if (response.ok) {
-        setSubmissionStatus('success');
-        setErrors({});
-        setTimeout(() => setSubmissionStatus('idle'), 3000);
-      } else {
+      if (!response.ok) {
         const errorData = await response.json();
-        setErrors({
-          ...errorData.errors,
-          general: errorData.message || 'Registration failed. Please try again.',
-        });
-        setSubmissionStatus('error');
+        throw new Error(errorData.error || 'Registration failed');
       }
-    } catch (error: any) {
-      setErrors({ general: 'An error occurred during registration: ' + error.message });
+      setSubmissionStatus('success');
+      setErrors({});
+      setTimeout(() => setSubmissionStatus('idle'), 3000);
+    } catch (error) {
+      setErrors({ general: error instanceof Error ? error.message : 'An error occurred' });
       setSubmissionStatus('error');
     }
   };
 
-  const handleSubmit = () => {
+  const handleSubmit = async () => {
     if (validateStep(4)) {
-      registerUser(formData);
-      onSubmit(formData);
+      await registerUser(formData);
+      if (submissionStatus === 'success') onSubmit(formData);
     }
   };
 
@@ -311,8 +203,7 @@ const RegistrationForm: React.FC<RegistrationFormProps> = ({ onSubmit }) => {
                   value={formData.email}
                   onChange={(e) => handleEmailChange(e.target.value)}
                   placeholder="Enter your email address"
-                  className={`w-full px-4 py-3 rounded-lg border ${errors?.email ? 'border-red-500' : 'border-gray-300'
-                    } focus:ring-2 focus:ring-green-500 focus:border-green-500 outline-none transition-all`}
+                  className={`w-full px-4 py-3 rounded-lg border ${errors?.email ? 'border-red-500' : 'border-gray-300'} focus:ring-2 focus:ring-green-500 focus:border-green-500 outline-none transition-all`}
                 />
                 {errors?.email ? (
                   <p className="mt-1 text-sm text-red-500">{errors.email}</p>
@@ -334,121 +225,86 @@ const RegistrationForm: React.FC<RegistrationFormProps> = ({ onSubmit }) => {
         return (
           <div className="space-y-4 w-full">
             <div>
-              <label htmlFor="firstName" className="block text-sm font-medium text-gray-700 mb-1">
-                First Name
-              </label>
+              <label htmlFor="firstName" className="block text-sm font-medium text-gray-700 mb-1">First Name</label>
               <input
                 type="text"
                 id="firstName"
                 value={formData.firstName}
                 onChange={(e) => setFormData({ ...formData, firstName: e.target.value })}
                 placeholder="Enter your first name"
-                className={`w-full px-4 py-3 rounded-lg border ${errors?.firstName ? 'border-red-500' : 'border-gray-300'
-                  } focus:ring-2 focus:ring-green-500 focus:border-green-500 outline-none transition-all`}
+                className={`w-full px-4 py-3 rounded-lg border ${errors?.firstName ? 'border-red-500' : 'border-gray-300'} focus:ring-2 focus:ring-green-500 focus:border-green-500 outline-none transition-all`}
               />
-              {errors?.firstName && (
-                <p className="mt-1 text-sm text-red-500">{errors.firstName}</p>
-              )}
+              {errors?.firstName && <p className="mt-1 text-sm text-red-500">{errors.firstName}</p>}
             </div>
             <div>
-              <label htmlFor="lastName" className="block text-sm font-medium text-gray-700 mb-1">
-                Last Name
-              </label>
+              <label htmlFor="lastName" className="block text-sm font-medium text-gray-700 mb-1">Last Name</label>
               <input
                 type="text"
                 id="lastName"
                 value={formData.lastName}
                 onChange={(e) => setFormData({ ...formData, lastName: e.target.value })}
                 placeholder="Enter your last name"
-                className={`w-full px-4 py-3 rounded-lg border ${errors?.lastName ? 'border-red-500' : 'border-gray-300'
-                  } focus:ring-2 focus:ring-green-500 focus:border-green-500 outline-none transition-all`}
+                className={`w-full px-4 py-3 rounded-lg border ${errors?.lastName ? 'border-red-500' : 'border-gray-300'} focus:ring-2 focus:ring-green-500 focus:border-green-500 outline-none transition-all`}
               />
-              {errors?.lastName && (
-                <p className="mt-1 text-sm text-red-500">{errors.lastName}</p>
-              )}
+              {errors?.lastName && <p className="mt-1 text-sm text-red-500">{errors.lastName}</p>}
             </div>
-
             {formData.accountType === 'business' ? (
               <>
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
-                    Business Name
-                  </label>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Business Name</label>
                   <input
                     type="text"
                     value={formData.businessName}
                     onChange={(e) => setFormData({ ...formData, businessName: e.target.value })}
                     placeholder="Enter business name"
-                    className={`w-full px-4 py-3 rounded-lg border ${errors?.businessName ? 'border-red-500' : 'border-gray-300'
-                      } focus:ring-2 focus:ring-green-500 focus:border-green-500 outline-none transition-all`}
+                    className={`w-full px-4 py-3 rounded-lg border ${errors?.businessName ? 'border-red-500' : 'border-gray-300'} focus:ring-2 focus:ring-green-500 focus:border-green-500 outline-none transition-all`}
                   />
-                  {errors?.businessName && (
-                    <p className="mt-1 text-sm text-red-500">{errors.businessName}</p>
-                  )}
+                  {errors?.businessName && <p className="mt-1 text-sm text-red-500">{errors.businessName}</p>}
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
-                    Registration Number
-                  </label>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Registration Number</label>
                   <input
                     type="text"
                     value={formData.registrationNumber}
                     onChange={(e) => setFormData({ ...formData, registrationNumber: e.target.value })}
                     placeholder="Enter registration number"
-                    className={`w-full px-4 py-3 rounded-lg border ${errors?.registrationNumber ? 'border-red-500' : 'border-gray-300'
-                      } focus:ring-2 focus:ring-green-500 focus:border-green-500 outline-none transition-all`}
+                    className={`w-full px-4 py-3 rounded-lg border ${errors?.registrationNumber ? 'border-red-500' : 'border-gray-300'} focus:ring-2 focus:ring-green-500 focus:border-green-500 outline-none transition-all`}
                   />
-                  {errors?.registrationNumber && (
-                    <p className="mt-1 text-sm text-red-500">{errors.registrationNumber}</p>
-                  )}
+                  {errors?.registrationNumber && <p className="mt-1 text-sm text-red-500">{errors.registrationNumber}</p>}
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
-                    Business Document
-                  </label>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Business Document</label>
                   <input
                     type="file"
                     accept=".pdf,.doc,.docx"
                     onChange={(e) => setFormData({ ...formData, businessDocument: e.target.files?.[0] || null })}
                     className="w-full"
                   />
-                  <p className="text-xs text-gray-500 mt-1">
-                    Upload business registration document (PDF, DOC, DOCX)
-                  </p>
+                  <p className="text-xs text-gray-500 mt-1">Upload business registration document (PDF, DOC, DOCX)</p>
                 </div>
               </>
             ) : (
               <>
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
-                    Phone Number
-                  </label>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Phone Number</label>
                   <input
                     type="tel"
                     value={formData.phoneNumber}
                     onChange={(e) => handlePhoneNumberChange(e.target.value)}
                     placeholder="Enter phone number"
-                    className={`w-full px-4 py-3 rounded-lg border ${errors?.phoneNumber ? 'border-red-500' : 'border-gray-300'
-                      } focus:ring-2 focus:ring-green-500 focus:border-green-500 outline-none transition-all`}
+                    className={`w-full px-4 py-3 rounded-lg border ${errors?.phoneNumber ? 'border-red-500' : 'border-gray-300'} focus:ring-2 focus:ring-green-500 focus:border-green-500 outline-none transition-all`}
                   />
-                  {errors?.phoneNumber && (
-                    <p className="mt-1 text-sm text-red-500">{errors.phoneNumber}</p>
-                  )}
+                  {errors?.phoneNumber && <p className="mt-1 text-sm text-red-500">{errors.phoneNumber}</p>}
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
-                    Date of Birth
-                  </label>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Date of Birth</label>
                   <input
                     type="date"
                     value={formData.dateOfBirth}
                     onChange={(e) => setFormData({ ...formData, dateOfBirth: e.target.value })}
-                    className={`w-full px-4 py-3 rounded-lg border ${errors?.dateOfBirth ? 'border-red-500' : 'border-gray-300'
-                      } focus:ring-2 focus:ring-green-500 focus:border-green-500 outline-none transition-all`}
+                    className={`w-full px-4 py-3 rounded-lg border ${errors?.dateOfBirth ? 'border-red-500' : 'border-gray-300'} focus:ring-2 focus:ring-green-500 focus:border-green-500 outline-none transition-all`}
                   />
-                  {errors?.dateOfBirth && (
-                    <p className="mt-1 text-sm text-red-500">{errors.dateOfBirth}</p>
-                  )}
+                  {errors?.dateOfBirth && <p className="mt-1 text-sm text-red-500">{errors.dateOfBirth}</p>}
                 </div>
               </>
             )}
@@ -459,21 +315,15 @@ const RegistrationForm: React.FC<RegistrationFormProps> = ({ onSubmit }) => {
         return (
           <div className="space-y-4 w-full">
             <div>
-              <label htmlFor="password" className="block text-sm font-medium text-gray-700 mb-1">
-                Create Password
-              </label>
+              <label htmlFor="password" className="block text-sm font-medium text-gray-700 mb-1">Create Password</label>
               <div className="relative">
                 <input
                   type={showPassword ? "text" : "password"}
                   id="password"
                   value={formData.password}
-                  onChange={(e) => {
-                    setFormData({ ...formData, password: e.target.value });
-                    handlePasswordChange(e.target.value);
-                  }}
+                  onChange={(e) => { setFormData({ ...formData, password: e.target.value }); handlePasswordChange(e.target.value); }}
                   placeholder="Enter your password"
-                  className={`w-full px-4 py-3 rounded-lg border ${errors?.password ? 'border-red-500' : 'border-gray-300'
-                    } focus:ring-2 focus:ring-green-500 focus:border-green-500 outline-none transition-all pr-10`}
+                  className={`w-full px-4 py-3 rounded-lg border ${errors?.password ? 'border-red-500' : 'border-gray-300'} focus:ring-2 focus:ring-green-500 focus:border-green-500 outline-none transition-all pr-10`}
                 />
                 <button
                   type="button"
@@ -484,7 +334,6 @@ const RegistrationForm: React.FC<RegistrationFormProps> = ({ onSubmit }) => {
                   {showPassword ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
                 </button>
               </div>
-
               <div className="mt-3 space-y-2">
                 <p className="text-sm font-medium text-gray-700">Password requirements:</p>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
@@ -492,41 +341,30 @@ const RegistrationForm: React.FC<RegistrationFormProps> = ({ onSubmit }) => {
                     { label: 'At least 8 characters', met: passwordStrength.hasMinLength },
                     { label: 'Contains a number', met: passwordStrength.hasNumber },
                     { label: 'Contains a special character', met: passwordStrength.hasSpecialChar },
-                    { label: 'Contains an uppercase letter', met: passwordStrength.hasUpperCase }
+                    { label: 'Contains an uppercase letter', met: passwordStrength.hasUpperCase },
                   ].map((req, index) => (
                     <div key={index} className="flex items-center gap-2">
-                      <div className={`w-4 h-4 rounded-full flex items-center justify-center ${req.met ? 'bg-green-600' : 'bg-gray-200'
-                        }`}>
+                      <div className={`w-4 h-4 rounded-full flex items-center justify-center ${req.met ? 'bg-green-600' : 'bg-gray-200'}`}>
                         {req.met && <Check className="w-3 h-3 text-white" />}
                       </div>
-                      <span className={`text-sm ${req.met ? 'text-green-600' : 'text-gray-500'}`}>
-                        {req.label}
-                      </span>
+                      <span className={`text-sm ${req.met ? 'text-green-600' : 'text-gray-500'}`}>{req.label}</span>
                     </div>
                   ))}
                 </div>
               </div>
-
-              {errors?.password && (
-                <p className="mt-1 text-sm text-red-500">{errors.password}</p>
-              )}
+              {errors?.password && <p className="mt-1 text-sm text-red-500">{errors.password}</p>}
             </div>
             <div>
-              <label htmlFor="confirmPassword" className="block text-sm font-medium text-gray-700 mb-1">
-                Confirm Password
-              </label>
+              <label htmlFor="confirmPassword" className="block text-sm font-medium text-gray-700 mb-1">Confirm Password</label>
               <input
                 type={showPassword ? "text" : "password"}
                 id="confirmPassword"
                 value={formData.confirmPassword}
                 onChange={(e) => setFormData({ ...formData, confirmPassword: e.target.value })}
                 placeholder="Confirm your password"
-                className={`w-full px-4 py-3 rounded-lg border ${errors?.confirmPassword ? 'border-red-500' : 'border-gray-300'
-                  } focus:ring-2 focus:ring-green-500 focus:border-green-500 outline-none transition-all`}
+                className={`w-full px-4 py-3 rounded-lg border ${errors?.confirmPassword ? 'border-red-500' : 'border-gray-300'} focus:ring-2 focus:ring-green-500 focus:border-green-500 outline-none transition-all`}
               />
-              {errors?.confirmPassword && (
-                <p className="mt-1 text-sm text-red-500">{errors.confirmPassword}</p>
-              )}
+              {errors?.confirmPassword && <p className="mt-1 text-sm text-red-500">{errors.confirmPassword}</p>}
             </div>
           </div>
         );
@@ -535,72 +373,50 @@ const RegistrationForm: React.FC<RegistrationFormProps> = ({ onSubmit }) => {
     }
   };
 
-  const renderMobileProgress = () => {
-    return (
-      <div className="fixed top-0 left-0 right-0 z-50 bg-white border-b border-gray-200 md:hidden">
-        <div className="px-4 py-3 flex items-center justify-between">
-          {step > 1 && (
-            <button
-              onClick={handleBack}
-              className="flex items-center text-gray-600 gap-1.5 py-1"
-            >
-              <ArrowLeft className="w-4 h-4" />
-              <span className="text-sm font-medium">Back</span>
-            </button>
-          )}
-          <div className="flex gap-1.5 absolute left-1/2 -translate-x-1/2">
-            {[1, 2, 3, 4].map((num) => (
-              <div
-                key={num}
-                className={`w-1.5 h-1.5 rounded-full transition-all duration-300 ${step >= num ? 'bg-green-600 w-4' : 'bg-gray-200'
-                  }`}
-              />
-            ))}
-          </div>
-          <div className="w-10" />
+  const renderMobileProgress = () => (
+    <div className="fixed top-0 left-0 right-0 z-50 bg-white border-b border-gray-200 md:hidden">
+      <div className="px-4 py-3 flex items-center justify-between">
+        {step > 1 && (
+          <button onClick={handleBack} className="flex items-center text-gray-600 gap-1.5 py-1">
+            <ArrowLeft className="w-4 h-4" />
+            <span className="text-sm font-medium">Back</span>
+          </button>
+        )}
+        <div className="flex gap-1.5 absolute left-1/2 -translate-x-1/2">
+          {[1, 2, 3, 4].map(num => (
+            <div key={num} className={`w-1.5 h-1.5 rounded-full transition-all duration-300 ${step >= num ? 'bg-green-600 w-4' : 'bg-gray-200'}`} />
+          ))}
         </div>
+        <div className="w-10" />
       </div>
-    );
-  };
+    </div>
+  );
 
-  const renderDesktopProgress = () => {
-    return (
-      <div className="hidden md:flex justify-between mb-8 relative">
-        {[1, 2, 3, 4].map((number) => (
-          <div key={number} className="flex-1 text-center">
-            <div className={`w-8 h-8 rounded-full flex items-center justify-center mx-auto mb-2
-            ${step >= number ? 'bg-green-600 text-white' : 'bg-gray-200 text-gray-400'}`}>
-              {step > number ? <Check className="w-5 h-5" /> : number}
-            </div>
-            <p className={`text-sm ${step >= number ? 'font-medium text-gray-900' : 'text-gray-500'}`}>
-              {number === 1 ? 'Account Type'
-                : number === 2 ? 'Email'
-                  : number === 3 ? 'Personal Info'
-                    : 'Password'}
-            </p>
+  const renderDesktopProgress = () => (
+    <div className="hidden md:flex justify-between mb-8 relative">
+      {[1, 2, 3, 4].map(number => (
+        <div key={number} className="flex-1 text-center">
+          <div className={`w-8 h-8 rounded-full flex items-center justify-center mx-auto mb-2 ${step >= number ? 'bg-green-600 text-white' : 'bg-gray-200 text-gray-400'}`}>
+            {step > number ? <Check className="w-5 h-5" /> : number}
           </div>
-        ))}
-        <div className="absolute top-4 left-0 w-full h-[2px] bg-gray-200 -z-10">
-          <div
-            className="h-full bg-green-600 transition-all duration-300"
-            style={{ width: `${((step - 1) / 3) * 100}%` }}
-          />
+          <p className={`text-sm ${step >= number ? 'font-medium text-gray-900' : 'text-gray-500'}`}>
+            {number === 1 ? 'Account Type' : number === 2 ? 'Email' : number === 3 ? 'Personal Info' : 'Password'}
+          </p>
         </div>
+      ))}
+      <div className="absolute top-4 left-0 w-full h-[2px] bg-gray-200 -z-10">
+        <div className="h-full bg-green-600 transition-all duration-300" style={{ width: `${((step - 1) / 3) * 100}%` }} />
       </div>
-    );
-  };
+    </div>
+  );
 
   const nextButtonText = () => {
-    if (step === 2 && useEmail === null) {
-      return 'Next';
-    }
+    if (step === 2 && useEmail === null) return 'Next';
     return step === 4 ? 'Create Account' : 'Next';
   };
 
   const handleNextStep = () => {
-    if (step === 2 && useEmail === null) {
-      return;
-    }
+    if (step === 2 && useEmail === null) return;
     handleNext();
   };
 
@@ -610,23 +426,16 @@ const RegistrationForm: React.FC<RegistrationFormProps> = ({ onSubmit }) => {
       {renderDesktopProgress()}
       <div className="space-y-6">
         {getStepContent()}
-        {submissionStatus === 'loading' && (
-          <p className="mt-2 text-sm text-gray-600">Registering... Please wait.</p>
-        )}
-        {submissionStatus === 'success' && (
-          <p className="mt-2 text-sm text-green-600">Registration successful! Welcome aboard!</p>
-        )}
-        {(submissionStatus === 'error' || errors?.general) && (
-          <p className="mt-2 text-sm text-red-500">{errors?.general || 'Registration failed. Please try again.'}</p>
-        )}
+        {submissionStatus === 'loading' && <p className="mt-2 text-sm text-gray-600">Registering... Please wait.</p>}
+        {submissionStatus === 'success' && <p className="mt-2 text-sm text-green-600">Registration successful! Welcome aboard!</p>}
+        {(submissionStatus === 'error' || errors?.general) && <p className="mt-2 text-sm text-red-500">{errors?.general || 'Registration failed. Please try again.'}</p>}
         <div className="flex gap-4 pt-4">
           {step > 1 && (
             <button
               onClick={handleBack}
               className="flex-1 border border-gray-300 text-gray-700 hover:bg-gray-50 font-semibold py-3 rounded-lg transition-all duration-200 flex items-center justify-center gap-2"
             >
-              <ArrowLeft className="w-5 h-5" />
-              Back
+              <ArrowLeft className="w-5 h-5" /> Back
             </button>
           )}
           <button

@@ -1,4 +1,3 @@
-// app/components/Registration/UserTypeCard.tsx
 import React from 'react';
 import { Check } from 'lucide-react';
 
@@ -6,15 +5,19 @@ interface UserTypeCardProps {
   title: string;
   description: string;
   icon: React.ReactNode;
-  isSelected: boolean;
+  isSelected?: boolean;
   onClick: () => void;
+  variant?: 'selection' | 'form';
 }
 
-const UserTypeCard: React.FC<UserTypeCardProps> = ({ title, description, icon, isSelected, onClick }) => (
+const UserTypeCard: React.FC<UserTypeCardProps> = ({ title, description, icon, isSelected, onClick, variant = 'form' }) => (
   <div
     onClick={onClick}
-    className={`relative p-6 rounded-xl border-2 cursor-pointer transition-all duration-200 
-    ${isSelected ? 'border-green-500 bg-green-50' : 'border-gray-200 hover:border-green-300'}`}
+    className={
+      variant === 'form'
+        ? `relative p-6 rounded-xl border-2 cursor-pointer transition-all duration-200 ${isSelected ? 'border-green-500 bg-green-50' : 'border-gray-200 hover:border-green-300'}`
+        : `relative p-6 rounded-xl border-2 cursor-pointer transition-all duration-200 ${isSelected ? 'border-green-500 bg-green-50' : 'border-gray-200 hover:border-green-300'}` // Same design for both variants
+    }
   >
     <div className="flex gap-4">
       <div className={`${isSelected ? 'text-green-600' : 'text-gray-400'}`}>

@@ -5,12 +5,8 @@ function useDebounce(func: Function, delay: number) {
 
   const debouncedFunction = useCallback(
     (...args: any[]) => {
-      if (timeoutRef.current) {
-        clearTimeout(timeoutRef.current);
-      }
-      timeoutRef.current = setTimeout(() => {
-        func(...args);
-      }, delay);
+      if (timeoutRef.current) clearTimeout(timeoutRef.current);
+      timeoutRef.current = setTimeout(() => func(...args), delay);
     },
     [func, delay]
   );
