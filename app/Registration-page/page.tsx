@@ -1,11 +1,10 @@
 "use client";
 
-import React, { useState } from 'react';
+import React, { useState, useCallback, useRef } from 'react';
 import { Header } from '../components/Header';
 import { Footer } from '../components/Footer';
 import { ArrowRight, ArrowLeft, Check, Eye, EyeOff, Building2, User } from 'lucide-react';
 import { isValidPhoneNumber, parsePhoneNumber } from 'libphonenumber-js';
-
 
 interface FormData {
   email: string;
@@ -48,11 +47,12 @@ interface UserTypeCardProps {
   isSelected: boolean;
   onClick: () => void;
 }
+
 const UserTypeCard: React.FC<UserTypeCardProps> = ({ title, description, icon, isSelected, onClick }) => (
   <div
     onClick={onClick}
     className={`relative p-6 rounded-xl border-2 cursor-pointer transition-all duration-200 
-      ${isSelected ? 'border-green-500 bg-green-50' : 'border-gray-200 hover:border-green-300'}`}
+    ${isSelected ? 'border-green-500 bg-green-50' : 'border-gray-200 hover:border-green-300'}`}
   >
     <div className="flex gap-4">
       <div className={`${isSelected ? 'text-green-600' : 'text-gray-400'}`}>
@@ -70,6 +70,25 @@ const UserTypeCard: React.FC<UserTypeCardProps> = ({ title, description, icon, i
     </div>
   </div>
 );
+
+// Custom debounce hook
+function useDebounce(func: Function, delay: number) {
+  const timeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  const debouncedFunction = useCallback(
+    (...args: any[]) => {
+      if (timeoutRef.current) {
+        clearTimeout(timeoutRef.current);
+      }
+      timeoutRef.current = setTimeout(() => {
+        func(...args);
+      }, delay);
+    },
+    [func, delay]
+  );
+
+  return debouncedFunction;
+}
 
 const RegistrationPage: React.FC = () => {
   const [step, setStep] = useState(1);
@@ -126,13 +145,49 @@ const RegistrationPage: React.FC = () => {
     }
 
     if (!/^07\d{9}$/.test(phone)) {
-      return { isValid: false, error: 'Enter a valid UK mobile number (07xxxxxxxxx)' };
+      return { isValid: false, error: 'Enter a valid UK mobile number (07xxxx)' };
     }
 
     return { isValid: true };
   };
 
+  const debouncedSetPasswordStrength = useDebounce((strengthChecks: PasswordStrength) => {
+    setPasswordStrength(strengthChecks);
+  }, 300);
 
+  const debouncedSetPhoneNumberError = useDebounce((error: string | undefined) => {
+    setErrors(prevErrors => ({ ...prevErrors, phoneNumber: error }));
+  }, 300);
+
+  const handlePasswordChange = (password: string) => {
+    const strengthChecks = {
+      hasMinLength: password.length >= 8,
+      hasNumber: /\d/.test(password),
+      hasSpecialChar: /[!@#$%^&*(),.?":{}|<>]/.test(password),
+      hasUpperCase: /[A-Z]/.test(password)
+    };
+    debouncedSetPasswordStrength(strengthChecks);
+  };
+
+  const handlePhoneNumberChange = (phone: string) => {
+    const cleanedPhone = phone.replace(/\D+/g, ''); // Remove all non-numeric characters
+
+    if (!cleanedPhone) {
+      debouncedSetPhoneNumberError('Phone number is required');
+      return;
+    }
+
+    if (cleanedPhone.startsWith('44') && cleanedPhone.length === 12) {
+      phone = '0' + cleanedPhone.slice(2);
+    }
+
+    if (!/^07\d{9}$/.test(phone)) {
+      debouncedSetPhoneNumberError('Enter a valid UK mobile number (07xxxx)');
+      return;
+    }
+
+    debouncedSetPhoneNumberError(undefined);
+  };
 
   const validateStep = (currentStep: number) => {
     const newErrors: FormErrors = {};
@@ -157,7 +212,6 @@ const RegistrationPage: React.FC = () => {
       if (!formData.lastName.trim()) {
         newErrors.lastName = 'Last name is required';
       }
-
 
       if (formData.accountType === 'business') {
         if (!formData.businessName?.trim()) {
@@ -257,6 +311,14 @@ const RegistrationPage: React.FC = () => {
             {errors.email && (
               <p className="mt-1 text-sm text-red-500">{errors.email}</p>
             )}
+            <div className="mt-4 space-y-2">
+              <button className="w-full py-3 bg-white border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors duration-200 flex items-center justify-center gap-2">
+                <span>G</span> Sign in with Google
+              </button>
+              <button className="w-full py-3 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors duration-200 flex items-center justify-center gap-2">
+                <span>f</span> Sign in with Facebook
+              </button>
+            </div>
           </div>
         );
 
@@ -359,9 +421,7 @@ const RegistrationPage: React.FC = () => {
                     onChange={(e) => {
                       const phone = e.target.value;
                       setFormData({ ...formData, phoneNumber: phone });
-
-                      const validation = validatePhoneNumber(phone);
-                      setErrors({ ...errors, phoneNumber: validation.isValid ? undefined : validation.error });
+                      handlePhoneNumberChange(phone);
                     }}
                     placeholder="Enter phone number"
                     className={`w-full px-4 py-3 rounded-lg border ${errors.phoneNumber ? 'border-red-500' : 'border-gray-300'
@@ -406,7 +466,7 @@ const RegistrationPage: React.FC = () => {
                   value={formData.password}
                   onChange={(e) => {
                     setFormData({ ...formData, password: e.target.value });
-                    validatePassword(e.target.value);
+                    handlePasswordChange(e.target.value);
                   }}
                   placeholder="Enter your password"
                   className={`w-full px-4 py-3 rounded-lg border ${errors.password ? 'border-red-500' : 'border-gray-300'
@@ -471,6 +531,7 @@ const RegistrationPage: React.FC = () => {
         return null;
     }
   };
+
   const renderMobileProgress = () => {
     return (
       <div className="fixed top-0 left-0 right-0 z-50 bg-white border-b border-gray-200 md:hidden">
@@ -505,7 +566,7 @@ const RegistrationPage: React.FC = () => {
         {[1, 2, 3, 4].map((number) => (
           <div key={number} className="flex-1 text-center">
             <div className={`w-8 h-8 rounded-full flex items-center justify-center mx-auto mb-2
-              ${step >= number ? 'bg-green-600 text-white' : 'bg-gray-200 text-gray-400'}`}>
+            ${step >= number ? 'bg-green-600 text-white' : 'bg-gray-200 text-gray-400'}`}>
               {step > number ? <Check className="w-5 h-5" /> : number}
             </div>
             <p className={`text-sm ${step >= number ? 'font-medium text-gray-900' : 'text-gray-500'}`}>
@@ -534,7 +595,7 @@ const RegistrationPage: React.FC = () => {
 
       <main className="flex-grow md:py-12">
         <div className="w-full md:max-w-xl mx-auto">
-          
+
           <div className="md:hidden">
             <div className="bg-white min-h-screen px-5 pt-16 pb-20">
               <div className="mb-8">
@@ -608,7 +669,7 @@ const RegistrationPage: React.FC = () => {
                   <button
                     onClick={step === 4 ? handleSubmit : handleNext}
                     className="flex-1 bg-green-600 hover:bg-green-700 text-white font-semibold py-3 rounded-lg transition-all duration-200 flex items-center justify-center gap-2"
-                  >
+                    >
                     {step === 4 ? 'Create Account' : 'Next'}
                     {step !== 4 && <ArrowRight className="w-5 h-5" />}
                   </button>
