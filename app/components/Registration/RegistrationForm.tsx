@@ -1,11 +1,12 @@
 "use client";
 
-import React, { useState } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { ArrowRight, ArrowLeft, Check, Eye, EyeOff, Building2, User } from 'lucide-react';
 import UserTypeCard from './UserTypeCard';
 import useDebounce from '@/app/hooks/useDebounce';
 import { validateEmail, validatePassword, validatePhoneNumber, calculatePasswordStrength, PasswordStrength } from '@/app/lib/user-registration/validation';
 import { FormData } from '@/app/lib/user-registration/types';
+import { useRecaptchaV3 } from '@/app/lib/user-registration/recaptcha';
 
 interface FormErrors {
   email?: string;
@@ -25,7 +26,6 @@ interface RegistrationFormProps {
   onSubmit: (data: FormData) => void;
 }
 
-
 const RegistrationForm: React.FC<RegistrationFormProps> = ({ onSubmit }) => {
   const [step, setStep] = useState(1);
   const [showPassword, setShowPassword] = useState(false);
@@ -39,7 +39,10 @@ const RegistrationForm: React.FC<RegistrationFormProps> = ({ onSubmit }) => {
   const [passwordStrength, setPasswordStrength] = useState<PasswordStrength>({
     hasMinLength: false, hasNumber: false, hasSpecialChar: false, hasUpperCase: false,
   });
-  const [useEmail, setUseEmail] = useState<boolean | null>(null); // Added from your design
+  const [useEmail, setUseEmail] = useState<boolean | null>(null);
+  const [recaptchaToken, setRecaptchaToken] = useState<string | null>(null);
+
+  const { ready, executeRecaptcha } = useRecaptchaV3(process.env.NEXT_PUBLIC_RECAPTCHA_SITE_KEY!);
 
   const debouncedSetPasswordStrength = useDebounce((strength: PasswordStrength) => setPasswordStrength(strength), 300);
   const debouncedSetPhoneNumberError = useDebounce((error: string | undefined) => setErrors(prev => ({ ...prev, phoneNumber: error })), 300);
@@ -97,6 +100,7 @@ const RegistrationForm: React.FC<RegistrationFormProps> = ({ onSubmit }) => {
       else if (!validatePassword(formData.password)) newErrors.password = 'Password does not meet requirements';
       if (!formData.confirmPassword) newErrors.confirmPassword = 'Please confirm your password';
       else if (formData.password !== formData.confirmPassword) newErrors.confirmPassword = 'Passwords do not match';
+      if (!recaptchaToken) newErrors.general = 'Please complete the reCAPTCHA';
     }
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
@@ -105,18 +109,26 @@ const RegistrationForm: React.FC<RegistrationFormProps> = ({ onSubmit }) => {
   const handleNext = () => validateStep(step) && setStep(step + 1);
   const handleBack = () => {
     if (step > 1) {
-      if (step === 2) setUseEmail(null); // From your design
+      if (step === 2) setUseEmail(null);
       setStep(step - 1);
     }
+  };
+
+  const getCsrfToken = async () => {
+    const res = await fetch('/api/csrf-token');
+    const { token } = await res.json();
+    return token;
   };
 
   const registerUser = async (data: FormData) => {
     setSubmissionStatus('loading');
     try {
-      const payload = { ...data, businessDocument: data.businessDocument ? data.businessDocument.name : '' };
+      if (!recaptchaToken) throw new Error('reCAPTCHA not completed');
+      const csrfToken = await getCsrfToken();
+      const payload = { ...data, businessDocument: data.businessDocument ? data.businessDocument.name : '', recaptchaToken };
       const response = await fetch('/api/users', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'x-csrf-token': csrfToken },
         body: JSON.stringify(payload),
       });
       if (!response.ok) {
@@ -209,7 +221,7 @@ const RegistrationForm: React.FC<RegistrationFormProps> = ({ onSubmit }) => {
                   <p className="mt-1 text-sm text-red-500">{errors.email}</p>
                 ) : emailStatus.available === false ? (
                   <p className="mt-1 text-sm text-red-500">
-                    {emailStatus.message}. <a href="/login" className="underline hover:text-red-700">Log in instead?</a>
+                    {emailStatus.message}.
                   </p>
                 ) : emailStatus.available === true ? (
                   <p className="mt-1 text-sm text-green-600">{emailStatus.message}</p>
@@ -420,14 +432,33 @@ const RegistrationForm: React.FC<RegistrationFormProps> = ({ onSubmit }) => {
     handleNext();
   };
 
+  useEffect(() => {
+    const runRecaptcha = async () => {
+      if (step === 4 && ready) {
+        try {
+          const token = await executeRecaptcha('register');
+          setRecaptchaToken(token);
+        } catch (error) {
+          console.error('Recaptcha error:', error);
+        }
+      }
+    };
+    runRecaptcha();
+  }, [step, ready, executeRecaptcha]);
+
   return (
     <>
       {renderMobileProgress()}
       {renderDesktopProgress()}
       <div className="space-y-6">
         {getStepContent()}
+        <ReCAPTCHA
+          sitekey={process.env.NEXT_PUBLIC_RECAPTCHA_SITE_KEY!}
+          size="invisible"
+          onChange={(token) => setRecaptchaToken(token)}
+        />
         {submissionStatus === 'loading' && <p className="mt-2 text-sm text-gray-600">Registering... Please wait.</p>}
-        {submissionStatus === 'success' && <p className="mt-2 text-sm text-green-600">Registration successful! Welcome aboard!</p>}
+        {submissionStatus === 'success' && <p className="mt-2 text-sm text-green-600">Registration successful! Please verify your email.</p>}
         {(submissionStatus === 'error' || errors?.general) && <p className="mt-2 text-sm text-red-500">{errors?.general || 'Registration failed. Please try again.'}</p>}
         <div className="flex gap-4 pt-4">
           {step > 1 && (
@@ -441,7 +472,7 @@ const RegistrationForm: React.FC<RegistrationFormProps> = ({ onSubmit }) => {
           <button
             onClick={nextButtonText() === 'Create Account' ? handleSubmit : handleNextStep}
             className="flex-1 bg-green-600 hover:bg-green-700 text-white font-semibold py-3 rounded-lg transition-all duration-200 flex items-center justify-center gap-2"
-            disabled={submissionStatus === 'loading' || (step === 2 && emailStatus.available !== true)}
+            disabled={submissionStatus === 'loading' || (step === 2 && emailStatus.available !== true) || (step === 4 && !recaptchaToken)}
           >
             {submissionStatus === 'loading' && step === 4 ? 'Processing...' : nextButtonText()}
             {step !== 4 && <ArrowRight className="w-5 h-5" />}
