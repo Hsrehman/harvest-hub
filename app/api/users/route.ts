@@ -9,15 +9,27 @@ import { sendVerificationEmail } from '@/app/lib/user-registration/verificationE
 import { verifyRecaptcha } from '@/app/lib/user-registration/recaptcha';
 import pino from 'pino';
 import { createClient } from 'redis';
+import { validateEmail, validatePassword, calculatePasswordStrength } from '@/app/lib/user-registration/validation';
 
 const logger = pino({ level: process.env.LOG_LEVEL || 'info' });
-const redisClient = createClient({ url: process.env.REDIS_URL });
-redisClient.connect().catch(err => logger.error({ err }, 'Redis connection failed'));
+
+let redisClient: any = null;
+try {
+  redisClient = createClient({ url: process.env.REDIS_URL });
+  redisClient.on('error', (err: Error) => logger.error({ err }, 'Redis connection error'));
+  redisClient.connect();
+} catch (err) {
+  logger.error({ err }, 'Failed to initialize Redis client');
+}
 
 export async function POST(req: NextRequest) {
   const ip = req.headers.get('x-forwarded-for') || req.headers.get('x-real-ip') || 'unknown';
 
   try {
+    if (!redisClient || !redisClient.isOpen) {
+      throw new Error('Redis connection not available');
+    }
+
     const rateLimitKey = `rate-limit:${ip}`;
     const rateLimitCount = await redisClient.get(rateLimitKey);
     const currentCount = rateLimitCount ? parseInt(rateLimitCount, 10) : 0;
@@ -69,15 +81,14 @@ export async function POST(req: NextRequest) {
 
     const { email, firstName, lastName, password, accountType, businessName, registrationNumber, businessDocument, phoneNumber, dateOfBirth } = value;
 
-    if (!validator.isEmail(email)) {
+    if (!validateEmail(email)) {
       logger.warn({ ip, email }, 'Invalid email after sanitization');
       throw new Error('Invalid email address after sanitization');
     }
 
-    const passwordStrength = zxcvbn(password);
-    if (passwordStrength.score < 3) {
-      logger.warn({ ip, passwordScore: passwordStrength.score }, 'Weak password rejected');
-      return NextResponse.json({ error: 'Password is too weak', details: `Score: ${passwordStrength.score}, Suggestions: ${passwordStrength.feedback.suggestions.join(', ')}` }, { status: 400 });
+    if (!validatePassword(password)) {
+      logger.warn({ ip, passwordScore: Object.values(calculatePasswordStrength(password)).filter(Boolean).length }, 'Weak password rejected');
+      return NextResponse.json({ error: 'Password is too weak', details: 'Password must have 8+ chars, uppercase, number, and special character' }, { status: 400 });
     }
 
     const passwordHash = await bcrypt.hash(password, 10);
@@ -96,7 +107,7 @@ export async function POST(req: NextRequest) {
 
     await sendVerificationEmail({ email, userId: result.rows[0].id });
 
-    await redisClient.set(rateLimitKey, currentCount + 1, { PX: 5 * 60 * 1000 }); // 5-minute expiry
+    await redisClient.setEx(rateLimitKey, 300, currentCount + 1); // 5-minute expiry
 
     logger.info({ userId: id, ip }, 'Registration successful');
     return NextResponse.json({ message: 'Customer registered successfully. Please verify your email.', userId: result.rows[0].id }, { status: 201 });
@@ -104,5 +115,13 @@ export async function POST(req: NextRequest) {
     logger.error({ error: error.message || error, ip }, 'Registration failed');
     if (error.code === '23505') return NextResponse.json({ error: 'Email already exists' }, { status: 409 });
     return NextResponse.json({ error: 'Internal server error', details: error.message || 'Unknown error' }, { status: 500 });
+  } finally {
+    if (redisClient && redisClient.isOpen) {
+      try {
+        await redisClient.quit();
+      } catch (err) {
+        logger.error({ err }, 'Failed to close Redis connection');
+      }
+    }
   }
 }

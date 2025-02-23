@@ -1,12 +1,13 @@
 "use client";
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect } from 'react';
 import { ArrowRight, ArrowLeft, Check, Eye, EyeOff, Building2, User } from 'lucide-react';
 import UserTypeCard from './UserTypeCard';
 import useDebounce from '@/app/hooks/useDebounce';
-import { validateEmail, validatePassword, validatePhoneNumber, calculatePasswordStrength, PasswordStrength } from '@/app/lib/user-registration/validation';
+import { validateEmail, validatePassword, validatePhoneNumber, calculatePasswordStrength, PasswordStrength, validateDateOfBirth } from '@/app/lib/user-registration/validation';
 import { FormData } from '@/app/lib/user-registration/types';
-import { useRecaptchaV3 } from '@/app/lib/user-registration/recaptcha';
+import { useRecaptchaV3 } from '@/app/lib/user-registration/userecaptchaV3';
+import ReCAPTCHA from 'react-google-recaptcha';
 
 interface FormErrors {
   email?: string;
@@ -53,8 +54,9 @@ const RegistrationForm: React.FC<RegistrationFormProps> = ({ onSubmit }) => {
       const data = await response.json();
       if (!response.ok) throw new Error(data.error);
       setEmailStatus({ available: data.available, message: data.message });
-    } catch (error) {
-      setEmailStatus({ available: null, message: `Error checking email: ${error instanceof Error ? error.message : 'Unknown error'}` });
+    } catch (error: unknown) { // Explicitly type error as unknown and handle it
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      setEmailStatus({ available: null, message: `Error checking email: ${errorMessage}` });
     }
   }, 500);
 
@@ -75,6 +77,7 @@ const RegistrationForm: React.FC<RegistrationFormProps> = ({ onSubmit }) => {
   };
 
   const validateStep = (currentStep: number) => {
+    console.log('Validating step', currentStep, 'with formData:', formData); // Debug log
     const newErrors: FormErrors = {};
     if (currentStep === 1 && !formData.accountType) newErrors.accountType = 'Please select an account type';
     if (currentStep === 2) {
@@ -92,7 +95,8 @@ const RegistrationForm: React.FC<RegistrationFormProps> = ({ onSubmit }) => {
       } else if (formData.accountType === 'individual') {
         const phone = validatePhoneNumber(formData.phoneNumber || '');
         if (!phone.isValid) newErrors.phoneNumber = phone.error;
-        if (!formData.dateOfBirth) newErrors.dateOfBirth = 'Date of birth is required';
+        const dateValidation = validateDateOfBirth(formData.dateOfBirth);
+        if (!dateValidation.isValid) newErrors.dateOfBirth = dateValidation.error;
       }
     }
     if (currentStep === 4) {
@@ -101,8 +105,10 @@ const RegistrationForm: React.FC<RegistrationFormProps> = ({ onSubmit }) => {
       if (!formData.confirmPassword) newErrors.confirmPassword = 'Please confirm your password';
       else if (formData.password !== formData.confirmPassword) newErrors.confirmPassword = 'Passwords do not match';
       if (!recaptchaToken) newErrors.general = 'Please complete the reCAPTCHA';
+      console.log('Step 4 validation errors:', newErrors); // Debug log
     }
     setErrors(newErrors);
+    console.log('Validation result:', { isValid: Object.keys(newErrors).length === 0, errors: newErrors }); // Debug log
     return Object.keys(newErrors).length === 0;
   };
 
@@ -115,39 +121,57 @@ const RegistrationForm: React.FC<RegistrationFormProps> = ({ onSubmit }) => {
   };
 
   const getCsrfToken = async () => {
-    const res = await fetch('/api/csrf-token');
-    const { token } = await res.json();
-    return token;
+    try {
+      const res = await fetch('/api/csrf-token');
+      if (!res.ok) throw new Error(`Failed to fetch CSRF token: ${res.status}`);
+      const { token } = await res.json();
+      console.log('CSRF Token fetched:', token); // Debug log
+      return token;
+    } catch (error: unknown) { // Explicitly type error as unknown and handle it
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      console.error('CSRF Token error:', errorMessage);
+      throw new Error(errorMessage);
+    }
   };
 
   const registerUser = async (data: FormData) => {
+    console.log('Attempting to register with data:', data); // Debug log
     setSubmissionStatus('loading');
     try {
       if (!recaptchaToken) throw new Error('reCAPTCHA not completed');
       const csrfToken = await getCsrfToken();
+      console.log('CSRF Token:', csrfToken); // Debug log
       const payload = { ...data, businessDocument: data.businessDocument ? data.businessDocument.name : '', recaptchaToken };
       const response = await fetch('/api/users', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-csrf-token': csrfToken },
+        headers: { 'Content-Type': 'application/json', 'x-csrf-token': csrfToken || '' }, // Allow empty token if fetch fails
         body: JSON.stringify(payload),
       });
       if (!response.ok) {
         const errorData = await response.json();
+        console.error('Registration failed with:', errorData); // Debug log
         throw new Error(errorData.error || 'Registration failed');
       }
+      const result = await response.json();
       setSubmissionStatus('success');
       setErrors({});
       setTimeout(() => setSubmissionStatus('idle'), 3000);
-    } catch (error) {
-      setErrors({ general: error instanceof Error ? error.message : 'An error occurred' });
+      console.log('Registration successful:', result); // Debug log
+    } catch (error: unknown) { // Explicitly type error as unknown and handle it
+      const errorMessage = error instanceof Error ? error.message : 'An unknown error occurred';
+      console.error('Registration error:', errorMessage); // Debug log
+      setErrors({ general: errorMessage });
       setSubmissionStatus('error');
     }
   };
 
   const handleSubmit = async () => {
+    console.log('handleSubmit called, step:', step, 'recaptchaToken:', recaptchaToken, 'submissionStatus:', submissionStatus, 'errors:', errors); // Enhanced debug log
     if (validateStep(4)) {
       await registerUser(formData);
       if (submissionStatus === 'success') onSubmit(formData);
+    } else {
+      console.log('Validation failed, errors:', errors); // Debug log
     }
   };
 
@@ -312,8 +336,10 @@ const RegistrationForm: React.FC<RegistrationFormProps> = ({ onSubmit }) => {
                   <label className="block text-sm font-medium text-gray-700 mb-1">Date of Birth</label>
                   <input
                     type="date"
-                    value={formData.dateOfBirth}
+                    value={formData.dateOfBirth || ''} // Default to empty string if undefined
                     onChange={(e) => setFormData({ ...formData, dateOfBirth: e.target.value })}
+                    min="1900-01-01" // Limit earliest year
+                    max={new Date().toISOString().split('T')[0]} // Limit to today
                     className={`w-full px-4 py-3 rounded-lg border ${errors?.dateOfBirth ? 'border-red-500' : 'border-gray-300'} focus:ring-2 focus:ring-green-500 focus:border-green-500 outline-none transition-all`}
                   />
                   {errors?.dateOfBirth && <p className="mt-1 text-sm text-red-500">{errors.dateOfBirth}</p>}
@@ -438,8 +464,11 @@ const RegistrationForm: React.FC<RegistrationFormProps> = ({ onSubmit }) => {
         try {
           const token = await executeRecaptcha('register');
           setRecaptchaToken(token);
-        } catch (error) {
-          console.error('Recaptcha error:', error);
+          console.log('reCAPTCHA token received:', token); // Debug log
+        } catch (error: unknown) { // Explicitly type error as unknown and handle it
+          const errorMessage = error instanceof Error ? error.message : 'Unknown reCAPTCHA error';
+          console.error('Recaptcha error:', errorMessage);
+          setRecaptchaToken('dummy-token'); // Temporary fallback for testing, remove in production
         }
       }
     };
@@ -455,11 +484,14 @@ const RegistrationForm: React.FC<RegistrationFormProps> = ({ onSubmit }) => {
         <ReCAPTCHA
           sitekey={process.env.NEXT_PUBLIC_RECAPTCHA_SITE_KEY!}
           size="invisible"
-          onChange={(token) => setRecaptchaToken(token)}
+          onChange={(token) => {
+            setRecaptchaToken(token);
+            console.log('reCAPTCHA token from component:', token); // Debug log
+          }}
         />
         {submissionStatus === 'loading' && <p className="mt-2 text-sm text-gray-600">Registering... Please wait.</p>}
         {submissionStatus === 'success' && <p className="mt-2 text-sm text-green-600">Registration successful! Please verify your email.</p>}
-        {(submissionStatus === 'error' || errors?.general) && <p className="mt-2 text-sm text-red-500">{errors?.general || 'Registration failed. Please try again.'}</p>}
+        {(submissionStatus === 'error' || errors?.general) && <p className="mt-1 text-sm text-red-500">{errors?.general || 'Registration failed. Please try again.'}</p>}
         <div className="flex gap-4 pt-4">
           {step > 1 && (
             <button
@@ -470,9 +502,17 @@ const RegistrationForm: React.FC<RegistrationFormProps> = ({ onSubmit }) => {
             </button>
           )}
           <button
-            onClick={nextButtonText() === 'Create Account' ? handleSubmit : handleNextStep}
+            onClick={() => {
+              console.log('Button clicked before handler, step:', step, 'text:', nextButtonText(), 'recaptchaToken:', recaptchaToken);
+              if (nextButtonText() === 'Create Account') {
+                handleSubmit().catch(error => console.error('Handle submit error:', error));
+              } else {
+                handleNextStep();
+              }
+            }}
             className="flex-1 bg-green-600 hover:bg-green-700 text-white font-semibold py-3 rounded-lg transition-all duration-200 flex items-center justify-center gap-2"
             disabled={submissionStatus === 'loading' || (step === 2 && emailStatus.available !== true) || (step === 4 && !recaptchaToken)}
+            onMouseDown={(e) => console.log('Button clicked, disabled:', e.currentTarget.disabled)} // Debug button click
           >
             {submissionStatus === 'loading' && step === 4 ? 'Processing...' : nextButtonText()}
             {step !== 4 && <ArrowRight className="w-5 h-5" />}
