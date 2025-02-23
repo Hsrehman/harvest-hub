@@ -16,7 +16,7 @@ const UserTypeCard: React.FC<UserTypeCardProps> = ({ title, description, icon, i
     className={
       variant === 'form'
         ? `relative p-6 rounded-xl border-2 cursor-pointer transition-all duration-200 ${isSelected ? 'border-green-500 bg-green-50' : 'border-gray-200 hover:border-green-300'}`
-        : `relative p-6 rounded-xl border-2 cursor-pointer transition-all duration-200 ${isSelected ? 'border-green-500 bg-green-50' : 'border-gray-200 hover:border-green-300'}` // Same design for both variants
+        : `relative p-6 rounded-xl border-2 cursor-pointer transition-all duration-200 ${isSelected ? 'border-green-500 bg-green-50' : 'border-gray-200 hover:border-green-300'}`
     }
   >
     <div className="flex gap-4">

@@ -25,6 +25,15 @@ export interface User {
   phoneNumber?: string;
   dateOfBirth?: string;
   emailVerified: boolean;
+  twoFactorEnabled?: boolean; // Added for 2FA
+  twoFactorSecret?: string; // Added for 2FA
   createdAt: Date;
   updatedAt: Date;
+}
+
+export interface SocialLoginData {
+  provider: 'google' | 'facebook';
+  userId: string;
+  email: string;
+  name: string;
 }

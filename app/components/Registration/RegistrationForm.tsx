@@ -4,10 +4,18 @@ import React, { useState, useEffect } from 'react';
 import { ArrowRight, ArrowLeft, Check, Eye, EyeOff, Building2, User } from 'lucide-react';
 import UserTypeCard from './UserTypeCard';
 import useDebounce from '@/app/hooks/useDebounce';
-import { validateEmail, validatePassword, validatePhoneNumber, calculatePasswordStrength, PasswordStrength, validateDateOfBirth } from '@/app/lib/user-registration/validation';
+import { validateEmail, validatePassword, validatePhoneNumber, calculatePasswordStrength, PasswordStrength, validateDateOfBirth, userSchema } from '@/app/lib/user-registration/validation';
 import { FormData } from '@/app/lib/user-registration/types';
-import { useRecaptchaV3 } from '@/app/lib/user-registration/userecaptchaV3';
-import ReCAPTCHA from 'react-google-recaptcha';
+import { useAuth } from '@/app/user-register-context/AuthContext';
+import { signIn, useSession } from 'next-auth/react';
+import * as yup from 'yup';
+
+// Extend NextAuth types for custom properties
+declare module 'next-auth' {
+  interface Session {
+    jwt?: string;
+  }
+}
 
 interface FormErrors {
   email?: string;
@@ -40,10 +48,9 @@ const RegistrationForm: React.FC<RegistrationFormProps> = ({ onSubmit }) => {
   const [passwordStrength, setPasswordStrength] = useState<PasswordStrength>({
     hasMinLength: false, hasNumber: false, hasSpecialChar: false, hasUpperCase: false,
   });
-  const [useEmail, setUseEmail] = useState<boolean | null>(null);
-  const [recaptchaToken, setRecaptchaToken] = useState<string | null>(null);
-
-  const { ready, executeRecaptcha } = useRecaptchaV3(process.env.NEXT_PUBLIC_RECAPTCHA_SITE_KEY!);
+  const [useEmail, setUseEmail] = useState<boolean | null>(null); // Added back for social login flow
+  const { jwtToken, setJwtToken, isAuthenticated } = useAuth();
+  const { data: session, status } = useSession();
 
   const debouncedSetPasswordStrength = useDebounce((strength: PasswordStrength) => setPasswordStrength(strength), 300);
   const debouncedSetPhoneNumberError = useDebounce((error: string | undefined) => setErrors(prev => ({ ...prev, phoneNumber: error })), 300);
@@ -76,7 +83,7 @@ const RegistrationForm: React.FC<RegistrationFormProps> = ({ onSubmit }) => {
     debouncedCheckEmail(email);
   };
 
-  const validateStep = (currentStep: number): boolean => {
+  const validateStep = async (currentStep: number): Promise<boolean> => { // Mark as async
     const newErrors: FormErrors = {};
 
     switch (currentStep) {
@@ -85,11 +92,12 @@ const RegistrationForm: React.FC<RegistrationFormProps> = ({ onSubmit }) => {
         break;
 
       case 2:
-        if (!formData.email) {
-          newErrors.email = 'Email is required';
-        } else if (!validateEmail(formData.email)) {
-          newErrors.email = 'Please enter a valid email';
+        try {
+          await userSchema.validateAt('email', { email: formData.email });
+        } catch (error: any) {
+          newErrors.email = error.message || 'Please enter a valid email';
         }
+        if (!formData.email) newErrors.email = 'Email is required';
         break;
 
       case 3:
@@ -109,21 +117,14 @@ const RegistrationForm: React.FC<RegistrationFormProps> = ({ onSubmit }) => {
         break;
 
       case 4:
-        if (!formData.password) {
-          newErrors.password = 'Password is required';
-        } else if (!validatePassword(formData.password)) {
-          newErrors.password = 'Password must meet all requirements';
+        try {
+          await userSchema.validateAt('password', { password: formData.password });
+          await userSchema.validateAt('confirmPassword', { confirmPassword: formData.confirmPassword });
+        } catch (error: any) {
+          if (error.path === 'password') newErrors.password = error.message || 'Password must meet requirements';
+          if (error.path === 'confirmPassword') newErrors.confirmPassword = error.message || 'Passwords do not match';
         }
-
-        if (!formData.confirmPassword) {
-          newErrors.confirmPassword = 'Please confirm your password';
-        } else if (formData.password !== formData.confirmPassword) {
-          newErrors.confirmPassword = 'Passwords do not match';
-        }
-
-        if (!recaptchaToken) {
-          newErrors.general = 'Please complete the reCAPTCHA verification';
-        }
+        if (!jwtToken && !session?.jwt) newErrors.general = 'Authentication token required';
         break;
     }
 
@@ -131,7 +132,7 @@ const RegistrationForm: React.FC<RegistrationFormProps> = ({ onSubmit }) => {
     return Object.keys(newErrors).length === 0;
   };
 
-  const handleNext = () => validateStep(step) && setStep(step + 1);
+  const handleNext = () => validateStep(step).then((isValid) => isValid && setStep(step + 1)); // Handle async
   const handleBack = () => {
     if (step > 1) {
       if (step === 2) setUseEmail(null);
@@ -158,7 +159,7 @@ const RegistrationForm: React.FC<RegistrationFormProps> = ({ onSubmit }) => {
     setSubmissionStatus('loading');
 
     try {
-      if (!validateStep(4)) {
+      if (!(await validateStep(4))) { // Await async validation
         setSubmissionStatus('error');
         return;
       }
@@ -167,7 +168,7 @@ const RegistrationForm: React.FC<RegistrationFormProps> = ({ onSubmit }) => {
       const payload = {
         ...data,
         businessDocument: data.businessDocument ? data.businessDocument.name : '',
-        recaptchaToken
+        enable2FA: false, // Default to false, user can enable later
       };
 
       const response = await fetch('/api/users', {
@@ -175,9 +176,10 @@ const RegistrationForm: React.FC<RegistrationFormProps> = ({ onSubmit }) => {
         credentials: 'same-origin',
         headers: {
           'Content-Type': 'application/json',
-          'X-CSRF-Token': csrfToken
+          'X-CSRF-Token': csrfToken,
+          'Authorization': `Bearer ${jwtToken || session?.jwt || ''}`,
         },
-        body: JSON.stringify(payload)
+        body: JSON.stringify(payload),
       });
 
       if (!response.ok) {
@@ -185,7 +187,8 @@ const RegistrationForm: React.FC<RegistrationFormProps> = ({ onSubmit }) => {
         throw new Error(errorData.error || 'Registration failed');
       }
 
-      await response.json();
+      const result = await response.json();
+      setJwtToken(result.jwtToken);
       setSubmissionStatus('success');
       setErrors({});
       onSubmit(data);
@@ -196,13 +199,16 @@ const RegistrationForm: React.FC<RegistrationFormProps> = ({ onSubmit }) => {
     }
   };
 
-  useEffect(() => {
-    if (step === 4 && ready) {
-      executeRecaptcha('register')
-        .then(setRecaptchaToken)
-        .catch(() => setRecaptchaToken('dummy-token'));
+  const handleSocialLogin = async (provider: 'google' | 'facebook') => {
+    try {
+      const result = await signIn(provider, { callbackUrl: '/Registration-page', redirect: true });
+      if (result?.error) {
+        setErrors({ general: `Social login failed: ${result.error}` });
+      }
+    } catch (error) {
+      setErrors({ general: 'Social login failed. Please try again.' });
     }
-  }, [step, ready, executeRecaptcha]);
+  };
 
   const nextButtonText = () => {
     if (step === 2 && useEmail === null) return 'Next';
@@ -272,7 +278,9 @@ const RegistrationForm: React.FC<RegistrationFormProps> = ({ onSubmit }) => {
               onClick={() => setFormData({ ...formData, accountType: 'business' })}
             />
             {errors?.accountType && (
-              <p className="mt-1 text-sm text-red-500">{errors.accountType}</p>
+              <p className="mt-1 text-sm text-red-500 flex items-center gap-1" aria-live="polite">
+                <span>⚠️</span> {errors.accountType}
+              </p>
             )}
           </div>
         );
@@ -286,14 +294,14 @@ const RegistrationForm: React.FC<RegistrationFormProps> = ({ onSubmit }) => {
                   How would you like to register?
                 </p>
                 <button
+                  onClick={() => handleSocialLogin('google')}
                   className="w-full py-3 bg-white border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors duration-200 flex items-center justify-center gap-2"
-                  onClick={() => setUseEmail(false)}
                 >
                   <span>G</span> Continue with Google
                 </button>
                 <button
+                  onClick={() => handleSocialLogin('facebook')}
                   className="w-full py-3 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors duration-200 flex items-center justify-center gap-2"
-                  onClick={() => setUseEmail(false)}
                 >
                   <span>f</span> Continue with Facebook
                 </button>
@@ -307,24 +315,29 @@ const RegistrationForm: React.FC<RegistrationFormProps> = ({ onSubmit }) => {
             ) : useEmail ? (
               <>
                 <label htmlFor="email" className="block text-sm font-medium text-gray-700 mb-1">
-                  What's your email?
+                  What's your email? <span className="text-gray-500 text-xs">(e.g., user@gmail.com)</span>
                 </label>
                 <input
                   type="email"
                   id="email"
+                  aria-label="Email address"
                   value={formData.email}
                   onChange={(e) => handleEmailChange(e.target.value)}
                   placeholder="Enter your email address"
                   className={`w-full px-4 py-3 rounded-lg border ${errors?.email ? 'border-red-500' : 'border-gray-300'} focus:ring-2 focus:ring-green-500 focus:border-green-500 outline-none transition-all`}
                 />
-                {errors?.email && <p className="mt-1 text-sm text-red-500">{errors.email}</p>}
-                {emailStatus.message && <p className={`mt-1 text-sm ${emailStatus.available === true ? 'text-green-600' : 'text-red-500'}`}>{emailStatus.message}</p>}
+                {errors?.email && (
+                  <p className="mt-1 text-sm text-red-500 flex items-center gap-1" aria-live="polite">
+                    <span>⚠️</span> {errors.email}
+                  </p>
+                )}
+                {emailStatus.message && (
+                  <p className={`mt-1 text-sm ${emailStatus.available === true ? 'text-green-600' : 'text-red-500'}`}>
+                    {emailStatus.message}
+                  </p>
+                )}
               </>
-            ) : (
-              <div>
-                <p>Continue with social accounts</p>
-              </div>
-            )}
+            ) : null}
           </div>
         );
 
@@ -332,93 +345,117 @@ const RegistrationForm: React.FC<RegistrationFormProps> = ({ onSubmit }) => {
         return (
           <div className="space-y-4">
             <label htmlFor="firstName" className="block text-sm font-medium text-gray-700">
-              First Name
+              First Name <span className="text-gray-500 text-xs">(required)</span>
             </label>
             <input
               type="text"
               id="firstName"
+              aria-label="First name"
               value={formData.firstName}
               onChange={(e) => setFormData({ ...formData, firstName: e.target.value })}
               placeholder="Enter your first name"
-              className={`w-full px-4 py-3 rounded-lg border ${errors?.firstName ?
-                'border-red-500' : 'border-gray-300'} focus:ring-2 focus:ring-green-500 focus:border-green-500 outline-none transition-all`}
+              className={`w-full px-4 py-3 rounded-lg border ${errors?.firstName ? 'border-red-500' : 'border-gray-300'} focus:ring-2 focus:ring-green-500 focus:border-green-500 outline-none transition-all`}
             />
-            {errors?.firstName && <p className="mt-1 text-sm text-red-500">{errors.firstName}</p>}
+            {errors?.firstName && (
+              <p className="mt-1 text-sm text-red-500 flex items-center gap-1" aria-live="polite">
+                <span>⚠️</span> {errors.firstName}
+              </p>
+            )}
 
             <label htmlFor="lastName" className="block text-sm font-medium text-gray-700">
-              Last Name
+              Last Name <span className="text-gray-500 text-xs">(required)</span>
             </label>
             <input
               type="text"
               id="lastName"
+              aria-label="Last name"
               value={formData.lastName}
               onChange={(e) => setFormData({ ...formData, lastName: e.target.value })}
               placeholder="Enter your last name"
-              className={`w-full px-4 py-3 rounded-lg border ${errors?.lastName ?
-                'border-red-500' : 'border-gray-300'} focus:ring-2 focus:ring-green-500 focus:border-green-500 outline-none transition-all`}
+              className={`w-full px-4 py-3 rounded-lg border ${errors?.lastName ? 'border-red-500' : 'border-gray-300'} focus:ring-2 focus:ring-green-500 focus:border-green-500 outline-none transition-all`}
             />
-            {errors?.lastName && <p className="mt-1 text-sm text-red-500">{errors.lastName}</p>}
+            {errors?.lastName && (
+              <p className="mt-1 text-sm text-red-500 flex items-center gap-1" aria-live="polite">
+                <span>⚠️</span> {errors.lastName}
+              </p>
+            )}
 
             {formData.accountType === 'business' && (
               <>
                 <label htmlFor="businessName" className="block text-sm font-medium text-gray-700">
-                  Business Name
+                  Business Name <span className="text-gray-500 text-xs">(required)</span>
                 </label>
                 <input
                   type="text"
                   id="businessName"
+                  aria-label="Business name"
                   value={formData.businessName || ''}
                   onChange={(e) => setFormData({ ...formData, businessName: e.target.value })}
                   placeholder="Enter your business name"
-                  className={`w-full px-4 py-3 rounded-lg border ${errors?.businessName ?
-                    'border-red-500' : 'border-gray-300'} focus:ring-2 focus:ring-green-500 focus:border-green-500 outline-none transition-all`}
+                  className={`w-full px-4 py-3 rounded-lg border ${errors?.businessName ? 'border-red-500' : 'border-gray-300'} focus:ring-2 focus:ring-green-500 focus:border-green-500 outline-none transition-all`}
                 />
-                {errors?.businessName && <p className="mt-1 text-sm text-red-500">{errors.businessName}</p>}
+                {errors?.businessName && (
+                  <p className="mt-1 text-sm text-red-500 flex items-center gap-1" aria-live="polite">
+                    <span>⚠️</span> {errors.businessName}
+                  </p>
+                )}
 
                 <label htmlFor="registrationNumber" className="block text-sm font-medium text-gray-700">
-                  Registration Number
+                  Registration Number <span className="text-gray-500 text-xs">(required)</span>
                 </label>
                 <input
                   type="text"
                   id="registrationNumber"
+                  aria-label="Registration number"
                   value={formData.registrationNumber || ''}
                   onChange={(e) => setFormData({ ...formData, registrationNumber: e.target.value })}
                   placeholder="Enter your registration number"
-                  className={`w-full px-4 py-3 rounded-lg border ${errors?.registrationNumber ?
-                    'border-red-500' : 'border-gray-300'} focus:ring-2 focus:ring-green-500 focus:border-green-500 outline-none transition-all`}
+                  className={`w-full px-4 py-3 rounded-lg border ${errors?.registrationNumber ? 'border-red-500' : 'border-gray-300'} focus:ring-2 focus:ring-green-500 focus:border-green-500 outline-none transition-all`}
                 />
-                {errors?.registrationNumber && <p className="mt-1 text-sm text-red-500">{errors.registrationNumber}</p>}
+                {errors?.registrationNumber && (
+                  <p className="mt-1 text-sm text-red-500 flex items-center gap-1" aria-live="polite">
+                    <span>⚠️</span> {errors.registrationNumber}
+                  </p>
+                )}
               </>
             )}
 
             {formData.accountType === 'individual' && (
               <>
                 <label htmlFor="phoneNumber" className="block text-sm font-medium text-gray-700">
-                  Phone Number
+                  Phone Number <span className="text-gray-500 text-xs">(e.g., 07xxxxxxxxx)</span>
                 </label>
                 <input
                   type="tel"
                   id="phoneNumber"
+                  aria-label="Phone number"
                   value={formData.phoneNumber || ''}
                   onChange={(e) => handlePhoneNumberChange(e.target.value)}
                   placeholder="Enter your phone number"
-                  className={`w-full px-4 py-3 rounded-lg border ${errors?.phoneNumber ?
-                    'border-red-500' : 'border-gray-300'} focus:ring-2 focus:ring-green-500 focus:border-green-500 outline-none transition-all`}
+                  className={`w-full px-4 py-3 rounded-lg border ${errors?.phoneNumber ? 'border-red-500' : 'border-gray-300'} focus:ring-2 focus:ring-green-500 focus:border-green-500 outline-none transition-all`}
                 />
-                {errors?.phoneNumber && <p className="mt-1 text-sm text-red-500">{errors.phoneNumber}</p>}
+                {errors?.phoneNumber && (
+                  <p className="mt-1 text-sm text-red-500 flex items-center gap-1" aria-live="polite">
+                    <span>⚠️</span> {errors.phoneNumber}
+                  </p>
+                )}
 
                 <label htmlFor="dateOfBirth" className="block text-sm font-medium text-gray-700">
-                  Date of Birth
+                  Date of Birth <span className="text-gray-500 text-xs">(18+ years old)</span>
                 </label>
                 <input
                   type="date"
                   id="dateOfBirth"
+                  aria-label="Date of birth"
                   value={formData.dateOfBirth || ''}
                   onChange={(e) => setFormData({ ...formData, dateOfBirth: e.target.value })}
-                  className={`w-full px-4 py-3 rounded-lg border ${errors?.dateOfBirth ?
-                    'border-red-500' : 'border-gray-300'} focus:ring-2 focus:ring-green-500 focus:border-green-500 outline-none transition-all`}
+                  className={`w-full px-4 py-3 rounded-lg border ${errors?.dateOfBirth ? 'border-red-500' : 'border-gray-300'} focus:ring-2 focus:ring-green-500 focus:border-green-500 outline-none transition-all`}
                 />
-                {errors?.dateOfBirth && <p className="mt-1 text-sm text-red-500">{errors.dateOfBirth}</p>}
+                {errors?.dateOfBirth && (
+                  <p className="mt-1 text-sm text-red-500 flex items-center gap-1" aria-live="polite">
+                    <span>⚠️</span> {errors.dateOfBirth}
+                  </p>
+                )}
               </>
             )}
           </div>
@@ -427,11 +464,14 @@ const RegistrationForm: React.FC<RegistrationFormProps> = ({ onSubmit }) => {
       case 4:
         return (
           <div>
-            <label htmlFor="password" className="block text-sm font-medium text-gray-700 mb-1">Create Password</label>
+            <label htmlFor="password" className="block text-sm font-medium text-gray-700 mb-1">
+              Create Password <span className="text-gray-500 text-xs">(8+ chars, uppercase, number, special char)</span>
+            </label>
             <div className="relative">
               <input
                 type={showPassword ? "text" : "password"}
                 id="password"
+                aria-label="Password"
                 value={formData.password}
                 onChange={(e) => { setFormData({ ...formData, password: e.target.value }); handlePasswordChange(e.target.value); }}
                 placeholder="Enter your password"
@@ -463,19 +503,31 @@ const RegistrationForm: React.FC<RegistrationFormProps> = ({ onSubmit }) => {
                   </div>
                 ))}
               </div>
+              <div className="w-full h-2 rounded bg-gray-200" style={{ width: `${(Object.values(passwordStrength).filter(Boolean).length / 4) * 100}%`, backgroundColor: Object.values(passwordStrength).filter(Boolean).length >= 3 ? 'green' : 'red' }} />
             </div>
-            {errors?.password && <p className="mt-1 text-sm text-red-500">{errors.password}</p>}
+            {errors?.password && (
+              <p className="mt-1 text-sm text-red-500 flex items-center gap-1" aria-live="polite">
+                <span>⚠️</span> {errors.password}
+              </p>
+            )}
 
-            <label htmlFor="confirmPassword" className="block text-sm font-medium text-gray-700 mb-1">Confirm Password</label>
+            <label htmlFor="confirmPassword" className="block text-sm font-medium text-gray-700 mb-1">
+              Confirm Password <span className="text-gray-500 text-xs">(must match)</span>
+            </label>
             <input
               type={showPassword ? "text" : "password"}
               id="confirmPassword"
+              aria-label="Confirm password"
               value={formData.confirmPassword}
               onChange={(e) => setFormData({ ...formData, confirmPassword: e.target.value })}
               placeholder="Confirm your password"
               className={`w-full px-4 py-3 rounded-lg border ${errors?.confirmPassword ? 'border-red-500' : 'border-gray-300'} focus:ring-2 focus:ring-green-500 focus:border-green-500 outline-none transition-all`}
             />
-            {errors?.confirmPassword && <p className="mt-1 text-sm text-red-500">{errors.confirmPassword}</p>}
+            {errors?.confirmPassword && (
+              <p className="mt-1 text-sm text-red-500 flex items-center gap-1" aria-live="polite">
+                <span>⚠️</span> {errors.confirmPassword}
+              </p>
+            )}
           </div>
         );
       default:
@@ -490,20 +542,13 @@ const RegistrationForm: React.FC<RegistrationFormProps> = ({ onSubmit }) => {
       <div className="space-y-6">
         {getStepContent()}
         
-        <div className="relative">
-          <ReCAPTCHA
-            sitekey={process.env.NEXT_PUBLIC_RECAPTCHA_SITE_KEY!}
-            size="invisible"
-            badge="bottomright"
-            onChange={(token) => {
-              setRecaptchaToken(token);
-            }}
-          />
-        </div>
-
         {submissionStatus === 'loading' && <p className="mt-2 text-sm text-gray-600">Registering... Please wait.</p>}
         {submissionStatus === 'success' && <p className="mt-2 text-sm text-green-600">Registration successful! Please verify your email.</p>}
-        {(submissionStatus === 'error' || errors?.general) && <p className="mt-1 text-sm text-red-500">{errors?.general || 'Registration failed. Please try again.'}</p>}
+        {(submissionStatus === 'error' || errors?.general) && (
+          <p className="mt-1 text-sm text-red-500 flex items-center gap-1" aria-live="polite">
+            <span>⚠️</span> {errors?.general || 'Registration failed. Please try again.'}
+          </p>
+        )}
         
         <div className="flex gap-4 pt-4">
           {step > 1 && (
@@ -524,7 +569,8 @@ const RegistrationForm: React.FC<RegistrationFormProps> = ({ onSubmit }) => {
             }}
             disabled={
               submissionStatus === 'loading' ||
-              (step === 2 && useEmail === true && emailStatus.available !== true)
+              (step === 2 && useEmail === true && emailStatus.available !== true) ||
+              (step === 4 && !jwtToken && !session?.jwt)
             }
             className="flex-1 bg-green-600 hover:bg-green-700 text-white font-semibold py-3 rounded-lg transition-all duration-200 flex items-center justify-center gap-2 disabled:bg-gray-400 disabled:cursor-not-allowed"
           >
@@ -534,7 +580,7 @@ const RegistrationForm: React.FC<RegistrationFormProps> = ({ onSubmit }) => {
         </div>
 
         <div className="text-xs text-gray-500 text-center mt-4">
-          This site is protected by reCAPTCHA and the Google{' '}
+          This site is protected by secure authentication and the{' '}
           <a 
             href="https://policies.google.com/privacy" 
             target="_blank" 

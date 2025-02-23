@@ -1,21 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from 'redis';
-import { v4 as uuidv4 } from 'uuid';
-
-const redisClient = createClient({ url: process.env.REDIS_URL });
-redisClient.connect().catch(err => console.error('Redis connection error:', err));
+import { generateCsrfToken, logSuspiciousActivity } from '@/app/utils/user-registration/auth';
 
 export async function GET(req: NextRequest) {
-  const ip = req.headers.get('x-forwarded-for') || 
-             req.headers.get('x-real-ip') || 
-             '127.0.0.1';
-             
+  const ip = req.headers.get('x-forwarded-for') || req.headers.get('x-real-ip') || 'unknown';
+
   try {
-    if (!redisClient.isOpen) {
-      throw new Error('Redis connection not available');
-    }
-    const csrfToken = uuidv4();
-    await redisClient.setEx(`csrf:${ip}`, 300, csrfToken); // 5 minutes expiry
+    const csrfToken = await generateCsrfToken(ip);
     return NextResponse.json({ token: csrfToken }, { 
       status: 200,
       headers: {
@@ -23,7 +13,7 @@ export async function GET(req: NextRequest) {
       }
     });
   } catch (error) {
-    console.error('CSRF Token generation error:', error);
+    logSuspiciousActivity(ip, 'Failed to generate CSRF token');
     return NextResponse.json(
       { error: 'Failed to generate CSRF token' }, 
       { status: 500 }

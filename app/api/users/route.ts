@@ -2,134 +2,115 @@ import { v4 as uuidv4 } from 'uuid';
 import bcrypt from 'bcrypt';
 import { NextRequest, NextResponse } from 'next/server';
 import pool from '@/app/lib/user-registration/db';
-import { userSchema } from '@/app/lib/user-registration/validation';
-import zxcvbn from 'zxcvbn';
-import validator from 'validator';
-import { sendVerificationEmail } from '@/app/lib/user-registration/verificationEmail';
-import { verifyRecaptcha } from '@/app/lib/user-registration/recaptcha';
+import { userSchema, validateEmail, validatePassword, calculatePasswordStrength } from '@/app/lib/user-registration/validation';
 import pino from 'pino';
-import { createClient } from 'redis';
-import { validateEmail, validatePassword, calculatePasswordStrength } from '@/app/lib/user-registration/validation';
+import jwt from 'jsonwebtoken';
+import { sendVerificationEmail } from '@/app/lib/user-registration/verificationEmail';
+import { generate2FASecret, verify2FAToken } from '@/app/lib/user-registration/2fa';
+import { connectRedis } from '@/app/utils/user-registration/redis'; // Updated path
+import { validateCsrfToken, logSuspiciousActivity } from '@/app/utils/user-registration/auth'; // Updated path
 
 const logger = pino({ level: process.env.LOG_LEVEL || 'info' });
-
-const redisClient = createClient({
-  url: process.env.REDIS_URL,
-  socket: {
-    reconnectStrategy: (retries) => {
-      if (retries > 10) {
-        return new Error('Max retries reached');
-      }
-      return Math.min(retries * 50, 500);
-    }
-  }
-});
-
-redisClient.on('error', (err) => {
-  logger.error('Redis Client Error:', err);
-});
-
-redisClient.on('connect', () => {
-  logger.info('Redis Client Connected');
-});
-
-const connectRedis = async () => {
-  if (!redisClient.isOpen) {
-    await redisClient.connect();
-  }
-  return redisClient;
-};
 
 export async function POST(req: NextRequest) {
   const ip = req.headers.get('x-forwarded-for') || req.headers.get('x-real-ip') || 'unknown';
 
   try {
     const redis = await connectRedis();
-    
-    const rateLimitKey = `rate-limit:${ip}`;
-    const rateLimitCount = await redis.get(rateLimitKey);
-    const currentCount = rateLimitCount ? parseInt(rateLimitCount, 10) : 0;
+    const body = await req.json();
+    let inputEmail = body.email || '';
 
-    if (currentCount >= 5) {
-      logger.warn({ ip }, 'Rate limit exceeded');
-      return NextResponse.json({ error: 'Too many requests. Please try again later.' }, { status: 429 });
+    // JWT Validation (for existing sessions, optional for registration)
+    const authHeader = req.headers.get('Authorization');
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+      const token = authHeader.split(' ')[1];
+      try {
+        const decoded = jwt.verify(token, process.env.JWT_SECRET!) as { email: string; userId?: string };
+        if (decoded.email !== inputEmail) {
+          logger.warn({ ip }, 'JWT email mismatch');
+          return NextResponse.json({ error: 'Invalid authentication token' }, { status: 401 });
+        }
+      } catch (error) {
+        logger.warn({ ip }, 'Invalid or expired JWT token');
+        return NextResponse.json({ error: 'Invalid or expired authentication token' }, { status: 401 });
+      }
     }
 
-    const body = await req.json();
-
+    // CSRF Validation
     const csrfToken = req.headers.get('x-csrf-token');
     if (!csrfToken) {
       logger.warn({ ip }, 'CSRF token missing');
       return NextResponse.json({ error: 'CSRF token required' }, { status: 403 });
     }
-    const storedCsrfToken = await redis.get(`csrf:${ip}`);
-    if (storedCsrfToken !== csrfToken) {
-      logger.warn({ ip }, 'Invalid CSRF token');
+    if (!await validateCsrfToken(ip, csrfToken)) {
+      logSuspiciousActivity(ip, 'Invalid CSRF token attempt');
       return NextResponse.json({ error: 'Invalid CSRF token' }, { status: 403 });
     }
 
-    const recaptchaToken = body.recaptchaToken;
-    if (!recaptchaToken) {
-      logger.warn({ ip }, 'reCAPTCHA token missing');
-      return NextResponse.json({ error: 'reCAPTCHA token required' }, { status: 400 });
-    }
-    const recaptchaValid = await verifyRecaptcha(recaptchaToken);
-    if (!recaptchaValid) {
-      logger.warn({ ip }, 'reCAPTCHA verification failed');
-      return NextResponse.json({ error: 'reCAPTCHA verification failed' }, { status: 400 });
-    }
-
+    // Validate Inputs
     const sanitizedBody = {
       ...body,
-      email: validator.trim(body.email || ''),
-      firstName: validator.trim(body.firstName || ''),
-      lastName: validator.trim(body.lastName || ''),
-      businessName: body.businessName ? validator.trim(body.businessName) : undefined,
-      registrationNumber: body.registrationNumber ? validator.trim(body.registrationNumber) : undefined,
-      phoneNumber: body.phoneNumber ? validator.trim(body.phoneNumber) : undefined,
+      email: inputEmail,
+      firstName: body.firstName ? body.firstName.trim() : '',
+      lastName: body.lastName ? body.lastName.trim() : '',
+      businessName: body.businessName ? body.businessName.trim() : undefined,
+      registrationNumber: body.registrationNumber ? body.registrationNumber.trim() : undefined,
+      phoneNumber: body.phoneNumber ? body.phoneNumber.trim() : undefined,
     };
 
-    const { value, error } = userSchema.validate(sanitizedBody, { abortEarly: false, stripUnknown: true });
-    if (error) {
-      logger.warn({ ip, error: error.details }, 'Validation failed');
-      return NextResponse.json({ error: 'Validation failed', details: error.details.map(e => e.message) }, { status: 400 });
+    try {
+      const validatedData = await userSchema.validate(sanitizedBody, { stripUnknown: true });
+      const { email: validatedEmail, firstName, lastName, password, accountType, businessName, registrationNumber, businessDocument, phoneNumber, dateOfBirth } = validatedData;
+      
+      if (!validateEmail(validatedEmail)) {
+        logger.warn({ ip, validatedEmail }, 'Invalid email after sanitization');
+        return NextResponse.json({ error: 'Invalid email address' }, { status: 400 });
+      }
+
+      if (!validatePassword(password)) {
+        logger.warn({ ip, passwordScore: Object.values(calculatePasswordStrength(password)).filter(Boolean).length }, 'Weak password rejected');
+        return NextResponse.json({ error: 'Password is too weak', details: 'Password must have 8+ chars, uppercase, number, and special character, and be strong (score >= 3)' }, { status: 400 });
+      }
+
+      const passwordHash = await bcrypt.hash(password, 10);
+      const id = uuidv4();
+
+      const query = `
+        INSERT INTO customer_data (
+          id, email, first_name, last_name, password_hash, account_type,
+          business_name, registration_number, business_document_url, phone_number, date_of_birth, email_verified, two_factor_enabled, two_factor_secret
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+        RETURNING id
+      `;
+      const twoFactorEnabled = body.enable2FA === true; // Optional 2FA
+      const twoFactorSecret = twoFactorEnabled ? (await generate2FASecret(id, redis)).base32 : null;
+      const values = [id, validatedEmail, firstName, lastName, passwordHash, accountType, businessName || null, registrationNumber || null, businessDocument || null, phoneNumber || null, dateOfBirth || null, false, twoFactorEnabled, twoFactorSecret];
+
+      const result = await pool.query(query, values);
+
+      await sendVerificationEmail({ email: validatedEmail, userId: result.rows[0].id });
+
+      const newJwt = jwt.sign({ email: validatedEmail, userId: result.rows[0].id }, process.env.JWT_SECRET!, { expiresIn: '1h' });
+      const refreshToken = jwt.sign({ email: validatedEmail, userId: result.rows[0].id }, process.env.JWT_SECRET!, { expiresIn: '24h' });
+
+      logger.info({ userId: id, ip }, 'Registration successful');
+      return NextResponse.json({
+        message: 'Customer registered successfully. Please verify your email.',
+        userId: result.rows[0].id,
+        jwtToken: newJwt,
+        refreshToken,
+        twoFactorEnabled,
+        twoFactorSecret: twoFactorEnabled ? twoFactorSecret : undefined,
+      }, { status: 201 });
+    } catch (error: any) {
+      logger.warn({ ip, error: error.message }, 'Validation failed');
+      return NextResponse.json({ error: 'Validation failed', details: error.message || 'Unknown error' }, { status: 400 });
     }
-
-    const { email, firstName, lastName, password, accountType, businessName, registrationNumber, businessDocument, phoneNumber, dateOfBirth } = value;
-
-    if (!validateEmail(email)) {
-      logger.warn({ ip, email }, 'Invalid email after sanitization');
-      throw new Error('Invalid email address after sanitization');
-    }
-
-    if (!validatePassword(password)) {
-      logger.warn({ ip, passwordScore: Object.values(calculatePasswordStrength(password)).filter(Boolean).length }, 'Weak password rejected');
-      return NextResponse.json({ error: 'Password is too weak', details: 'Password must have 8+ chars, uppercase, number, and special character' }, { status: 400 });
-    }
-
-    const passwordHash = await bcrypt.hash(password, 10);
-    const id = uuidv4();
-
-    const query = `
-      INSERT INTO customer_data (
-        id, email, first_name, last_name, password_hash, account_type,
-        business_name, registration_number, business_document_url, phone_number, date_of_birth, email_verified
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-      RETURNING id
-    `;
-    const values = [id, email, firstName, lastName, passwordHash, accountType, businessName || null, registrationNumber || null, businessDocument || null, phoneNumber || null, dateOfBirth || null, false];
-
-    const result = await pool.query(query, values);
-
-    await sendVerificationEmail({ email, userId: result.rows[0].id });
-
-    await redis.setEx(rateLimitKey, 300, (currentCount + 1).toString());
-
-    logger.info({ userId: id, ip }, 'Registration successful');
-    return NextResponse.json({ message: 'Customer registered successfully. Please verify your email.', userId: result.rows[0].id }, { status: 201 });
   } catch (error: any) {
     logger.error({ error: error.message || error, ip }, 'Registration failed');
-    if (error.code === '23505') return NextResponse.json({ error: 'Email already exists' }, { status: 409 });
+    if (error.code === '23505') {
+      return NextResponse.json({ error: 'Email already exists' }, { status: 409 });
+    }
     return NextResponse.json({ error: 'Internal server error', details: error.message || 'Unknown error' }, { status: 500 });
   }
 }

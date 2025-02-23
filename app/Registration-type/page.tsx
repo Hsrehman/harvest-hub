@@ -6,6 +6,10 @@ import { Header } from '@/app/components/Header';
 import { Footer } from '@/app/components/Footer';
 import { Breadcrumb } from '@/app/components/Breadcrumb';
 import { useRouter } from 'next/navigation';
+import pino from 'pino';
+import { AuthProvider } from '@/app/user-register-context/AuthContext';
+
+const logger = pino({ level: process.env.LOG_LEVEL || 'info' });
 
 interface SelectionCardProps {
   title: string;
@@ -49,43 +53,45 @@ const RegistrationTypePage: React.FC = () => {
 
   const handleRegister = (type: string) => {
     if (type === 'customer') {
-      console.log(`Registering as ${type}`);
-      router.push('/Registration-page'); // Only customer redirects to register
+      logger.info({ type }, 'Registering as customer');
+      router.push('/Registration-page');
     }
-    // Farmer does nothing since it's disabled and not your part
+    // Farmer does nothing since it's disabled
   };
 
   const handleLogin = (type: string) => {
-    console.log(`Logging in as ${type}`);
+    logger.info({ type }, 'Logging in as user');
     // Optional: router.push(`/login?type=${type}`);
   };
 
   return (
-    <div className="min-h-screen flex flex-col bg-gray-50">
-      <Header cartTotal={0} />
-      <main className="flex-grow py-12">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <Breadcrumb pageName="Select Account Type" />
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-8 min-h-[600px]">
-            <SelectionCard
-              title="Customer Account"
-              description="Find and purchase fresh produce directly from local farmers. Get access to the best quality products for your needs."
-              userType="customer"
-              onRegister={handleRegister}
-              onLogin={handleLogin}
-            />
-            <SelectionCard
-              title="Farmer Account"
-              description="Sell your produce directly to customers. Manage your inventory and grow your farming business."
-              userType="farmer"
-              onRegister={handleRegister}
-              onLogin={handleLogin}
-            />
+    <AuthProvider>
+      <div className="min-h-screen flex flex-col bg-gray-50">
+        <Header cartTotal={0} />
+        <main className="flex-grow py-12">
+          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <Breadcrumb pageName="Select Account Type" />
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-8 min-h-[600px]">
+              <SelectionCard
+                title="Customer Account"
+                description="Find and purchase fresh produce directly from local farmers. Get access to the best quality products for your needs."
+                userType="customer"
+                onRegister={handleRegister}
+                onLogin={handleLogin}
+              />
+              <SelectionCard
+                title="Farmer Account"
+                description="Sell your produce directly to customers. Manage your inventory and grow your farming business."
+                userType="farmer"
+                onRegister={handleRegister}
+                onLogin={handleLogin}
+              />
+            </div>
           </div>
-        </div>
-      </main>
-      <Footer />
-    </div>
+        </main>
+        <Footer />
+      </div>
+    </AuthProvider>
   );
 };
 

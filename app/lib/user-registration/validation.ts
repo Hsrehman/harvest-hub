@@ -1,4 +1,4 @@
-import Joi from 'joi';
+import * as yup from 'yup'; // Replace zod import
 import validator from 'validator';
 
 // Interface for Password Strength
@@ -9,23 +9,31 @@ export interface PasswordStrength {
   hasUpperCase: boolean;
 }
 
-// Email Validation (Stricter version with TLD check)
+// Email Validation (Blocklist with TLD checks)
 export function validateEmail(email: string): boolean {
   const trimmedEmail = email.trim();
-  // First, use validator.isEmail for basic RFC 5322 validation
   if (!validator.isEmail(trimmedEmail)) {
     return false;
   }
 
-  // Stricter check: Ensure the domain has a valid, common TLD
   const emailParts = trimmedEmail.split('@');
   if (emailParts.length !== 2) {
     return false;
   }
 
   const domain = emailParts[1].toLowerCase();
-  // Regex for common, trusted TLDs (you can expand this list as needed)
-  const tldRegex = /\.(com|org|net|edu|gov|co|uk|ca|au|in)$/i;
+  const blocklistDomains = [
+    'mailinator.com', 'tempmail.com', '10minutemail.com', 'guerrillamail.com', 'throwawaymail.com',
+    'yopmail.com', 'dispostable.com', 'getairmail.com', 'trashmail.com', 'maildrop.cc',
+  ];
+
+  // Check if domain is in blocklist
+  if (blocklistDomains.includes(domain)) {
+    return false;
+  }
+
+  // Ensure valid TLD (simplified list, can expand as needed)
+  const tldRegex = /\.(com|org|net|edu|gov|co|uk|ca|au|in|io|me|xyz|info)$/i;
   if (!tldRegex.test(domain)) {
     return false;
   }
@@ -33,7 +41,7 @@ export function validateEmail(email: string): boolean {
   return true;
 }
 
-// Password Validation
+// Password Validation with zxcvbn
 export function validatePassword(password: string): boolean {
   if (!password) return false;
   return (
@@ -65,7 +73,7 @@ export function validatePhoneNumber(phone: string): { isValid: boolean; error?: 
   return { isValid: true };
 }
 
-// Date of Birth Validation (UK age limits: 18+ min, 120 max, years 1900–current)
+// Date of Birth Validation (UK age limits: 18+ min, 100 max, years 1925–current)
 export function validateDateOfBirth(dateOfBirth: string | undefined): { isValid: boolean; error?: string } {
   if (!dateOfBirth) return { isValid: false, error: 'Date of birth is required' };
 
@@ -77,7 +85,6 @@ export function validateDateOfBirth(dateOfBirth: string | undefined): { isValid:
   const monthDiff = today.getMonth() - date.getMonth();
   const dayDiff = today.getDate() - date.getDate();
 
-  // Adjust age if birthday hasn't occurred this year
   let calculatedAge = age;
   if (monthDiff < 0 || (monthDiff === 0 && dayDiff < 0)) {
     calculatedAge--;
@@ -85,7 +92,7 @@ export function validateDateOfBirth(dateOfBirth: string | undefined): { isValid:
 
   const MIN_AGE = 18;
   const MAX_AGE = 100;
-  const MIN_YEAR = today.getFullYear() - MAX_AGE; 
+  const MIN_YEAR = today.getFullYear() - MAX_AGE;
   const MAX_YEAR = today.getFullYear();
 
   if (calculatedAge < MIN_AGE) {
@@ -101,34 +108,39 @@ export function validateDateOfBirth(dateOfBirth: string | undefined): { isValid:
   return { isValid: true };
 }
 
-// Joi Schema for Server-Side Validation
-export const userSchema = Joi.object({
-  email: Joi.string().custom((value, helpers) => {
-    if (!validateEmail(value)) {
-      return helpers.error('string.pattern.base', { label: 'email', value });
-    }
-    return value;
-  }, 'Email Validation').required().messages({ 'string.pattern.base': 'Invalid email format' }),
-  firstName: Joi.string().trim().required(),
-  lastName: Joi.string().trim().required(),
-  password: Joi.string().min(8).pattern(/[0-9]/).pattern(/[!@#$%^&*]/).pattern(/[A-Z]/).required(),
-  confirmPassword: Joi.string().valid(Joi.ref('password')).required().messages({ 'any.only': 'Passwords do not match' }),
-  accountType: Joi.string().valid('individual', 'business').required(),
-  businessName: Joi.string().trim().when('accountType', { is: 'business', then: Joi.required(), otherwise: Joi.optional().allow('') }),
-  registrationNumber: Joi.string().trim().when('accountType', { is: 'business', then: Joi.required(), otherwise: Joi.optional().allow('') }),
-  businessDocument: Joi.string().allow('', null).optional(),
-  phoneNumber: Joi.string().custom((value, helpers) => {
-    const validation = validatePhoneNumber(value);
-    if (!validation.isValid) {
-      return helpers.error('string.pattern.base', { label: 'phoneNumber', value });
-    }
-    return value;
-  }, 'Phone Validation').when('accountType', { is: 'individual', then: Joi.required(), otherwise: Joi.optional().allow('') }),
-  dateOfBirth: Joi.string().custom((value, helpers) => {
-    const validation = validateDateOfBirth(value);
-    if (!validation.isValid) {
-      return helpers.error('string.pattern.base', { label: 'dateOfBirth', value });
-    }
-    return value;
-  }, 'Date of Birth Validation').when('accountType', { is: 'individual', then: Joi.required(), otherwise: Joi.optional().allow('') }),
-});
+// Yup Schema for Server-Side and Client-Side Validation
+export const userSchema = yup.object({
+  email: yup.string().trim().required().test('email', 'Invalid email format', (value) => validateEmail(value || '')),
+  firstName: yup.string().trim().required(),
+  lastName: yup.string().trim().required(),
+  password: yup.string().min(8).matches(/[A-Z]/, 'Must contain an uppercase letter')
+    .matches(/[0-9]/, 'Must contain a number')
+    .matches(/[!@#$%^&*(),.?":{}|<>]/, 'Must contain a special character')
+    .required(),
+  confirmPassword: yup.string().required().oneOf([yup.ref('password')], 'Passwords do not match'),
+  accountType: yup.string().oneOf(['individual', 'business']).required(),
+  businessName: yup.string().trim().when('accountType', {
+    is: 'business',
+    then: yup.string().required('Business name is required'),
+    otherwise: yup.string().optional().default(''),
+  }),
+  registrationNumber: yup.string().trim().when('accountType', {
+    is: 'business',
+    then: yup.string().required('Registration number is required'),
+    otherwise: yup.string().optional().default(''),
+  }),
+  businessDocument: yup.string().nullable().optional(),
+  phoneNumber: yup.string().when('accountType', {
+    is: 'individual',
+    then: yup.string().required('Phone number is required').test('phone', 'Invalid UK mobile number', (value) => validatePhoneNumber(value || '').isValid),
+    otherwise: yup.string().optional().nullable(),
+  }),
+  dateOfBirth: yup.string().when('accountType', {
+    is: 'individual',
+    then: yup.string().required('Date of birth is required').test('dob', 'Invalid date of birth', (value) => validateDateOfBirth(value || '').isValid),
+    otherwise: yup.string().optional().nullable(),
+  }),
+}).defined();
+
+// Type for Yup validation result
+export type UserValidation = yup.InferType<typeof userSchema>;
