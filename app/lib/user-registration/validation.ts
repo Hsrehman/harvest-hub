@@ -9,9 +9,28 @@ export interface PasswordStrength {
   hasUpperCase: boolean;
 }
 
-// Email Validation
+// Email Validation (Stricter version with TLD check)
 export function validateEmail(email: string): boolean {
-  return validator.isEmail(email.trim());
+  const trimmedEmail = email.trim();
+  // First, use validator.isEmail for basic RFC 5322 validation
+  if (!validator.isEmail(trimmedEmail)) {
+    return false;
+  }
+
+  // Stricter check: Ensure the domain has a valid, common TLD
+  const emailParts = trimmedEmail.split('@');
+  if (emailParts.length !== 2) {
+    return false;
+  }
+
+  const domain = emailParts[1].toLowerCase();
+  // Regex for common, trusted TLDs (you can expand this list as needed)
+  const tldRegex = /\.(com|org|net|edu|gov|co|uk|ca|au|in)$/i;
+  if (!tldRegex.test(domain)) {
+    return false;
+  }
+
+  return true;
 }
 
 // Password Validation

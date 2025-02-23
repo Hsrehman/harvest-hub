@@ -13,25 +13,41 @@ import { validateEmail, validatePassword, calculatePasswordStrength } from '@/ap
 
 const logger = pino({ level: process.env.LOG_LEVEL || 'info' });
 
-let redisClient: any = null;
-try {
-  redisClient = createClient({ url: process.env.REDIS_URL });
-  redisClient.on('error', (err: Error) => logger.error({ err }, 'Redis connection error'));
-  redisClient.connect();
-} catch (err) {
-  logger.error({ err }, 'Failed to initialize Redis client');
-}
+const redisClient = createClient({
+  url: process.env.REDIS_URL,
+  socket: {
+    reconnectStrategy: (retries) => {
+      if (retries > 10) {
+        return new Error('Max retries reached');
+      }
+      return Math.min(retries * 50, 500);
+    }
+  }
+});
+
+redisClient.on('error', (err) => {
+  logger.error('Redis Client Error:', err);
+});
+
+redisClient.on('connect', () => {
+  logger.info('Redis Client Connected');
+});
+
+const connectRedis = async () => {
+  if (!redisClient.isOpen) {
+    await redisClient.connect();
+  }
+  return redisClient;
+};
 
 export async function POST(req: NextRequest) {
   const ip = req.headers.get('x-forwarded-for') || req.headers.get('x-real-ip') || 'unknown';
 
   try {
-    if (!redisClient || !redisClient.isOpen) {
-      throw new Error('Redis connection not available');
-    }
-
+    const redis = await connectRedis();
+    
     const rateLimitKey = `rate-limit:${ip}`;
-    const rateLimitCount = await redisClient.get(rateLimitKey);
+    const rateLimitCount = await redis.get(rateLimitKey);
     const currentCount = rateLimitCount ? parseInt(rateLimitCount, 10) : 0;
 
     if (currentCount >= 5) {
@@ -46,7 +62,7 @@ export async function POST(req: NextRequest) {
       logger.warn({ ip }, 'CSRF token missing');
       return NextResponse.json({ error: 'CSRF token required' }, { status: 403 });
     }
-    const storedCsrfToken = await redisClient.get(`csrf:${ip}`);
+    const storedCsrfToken = await redis.get(`csrf:${ip}`);
     if (storedCsrfToken !== csrfToken) {
       logger.warn({ ip }, 'Invalid CSRF token');
       return NextResponse.json({ error: 'Invalid CSRF token' }, { status: 403 });
@@ -107,7 +123,7 @@ export async function POST(req: NextRequest) {
 
     await sendVerificationEmail({ email, userId: result.rows[0].id });
 
-    await redisClient.setEx(rateLimitKey, 300, currentCount + 1); // 5-minute expiry
+    await redis.setEx(rateLimitKey, 300, (currentCount + 1).toString());
 
     logger.info({ userId: id, ip }, 'Registration successful');
     return NextResponse.json({ message: 'Customer registered successfully. Please verify your email.', userId: result.rows[0].id }, { status: 201 });
@@ -115,13 +131,5 @@ export async function POST(req: NextRequest) {
     logger.error({ error: error.message || error, ip }, 'Registration failed');
     if (error.code === '23505') return NextResponse.json({ error: 'Email already exists' }, { status: 409 });
     return NextResponse.json({ error: 'Internal server error', details: error.message || 'Unknown error' }, { status: 500 });
-  } finally {
-    if (redisClient && redisClient.isOpen) {
-      try {
-        await redisClient.quit();
-      } catch (err) {
-        logger.error({ err }, 'Failed to close Redis connection');
-      }
-    }
   }
 }
